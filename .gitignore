@@ -1,0 +1,9 @@
+# Guile
+
+*.go
+
+# org-mode
+
+*.texi
+*.info
+*.html
