@@ -7,3 +7,13 @@
 *.texi
 *.info
 *.html
+
+# Emacs
+
+abbrevs
+TAGS
+tags
+
+# Dev
+
+dev/
