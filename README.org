@@ -1,0 +1,164 @@
+#+TITLE: Schedl
+#+AUTHOR: mH
+#+OPTIONS: H:6
+
+* schedl - Static scheduler
+
+Simple static scheduler, with support for missed scheduled jobs using
+=statx(2)=. [[https://www.gnu.org/software/guile/][guile/scheme]] version of
+[[https://github.com/matthmr/sched.gpl][sched.gpl]], simplified and less
+configurable.
+
+** Building
+
+There's no need to manually compile this project, as it is Scheme code, which is
+AOT-compiled by =guile=. The =Makefile= does provide some targets:
+
+- =install=: install system-wide
+- =test=: runs the test suite
+
+and some variables:
+
+- =SCHEMER=: Scheme interpreter to run the test suite with (=guile=)
+- =PREFIX=: install prefix (=/usr/local/=)
+- =INFODIR=: info prefix, relative to =PREFIX= (=${PREFIX}/share/info/dir/=)
+- =DOCS=: =y= or =n= for compiling and installing documentation (=y=)
+
+Again, you can use the script as is, without needing to install it. It's
+recomended you run the test suite, however.
+
+** Using
+
+Run =schedl [options] <jobfile>=.
+
+Where =<jobfile>= is a required =job= file.
+
+See =schedl --help=.
+
+*** jobfile syntax
+
+jobfiles are scheme files that contain jobs to run on a /time scope/. A time
+scope should be any combination of Year-Month-Day and/or Month-Day scopes.
+
+Each job expression is defined with the =job= macro of the following form:
+
+#+begin_src scheme
+  (job <time-scope> <jobs>)
+#+end_src
+
+**** Time scope
+
+Time scopes are scheme lists that serve as the first argument for a job
+expression. The main time scopes are of the form:
+
+***** Month-Day scope
+
+You can define a job to run given a month and a day using the syntax =(<day>
+<month>)=. For example:
+
+- =(14 3)=: March 14th
+- =(9 10)=: October 9th
+- =(1 1)=: January 1st
+
+***** Week-as-Day syntax
+
+You can substitute the =day= field by a =week= field. Those are =sun=, =mon=,
+=tue=, =wed=, =thu=, =fri= and =sat=. For example:
+
+- =(sat 1)=: Every Saturday of January
+- =(mon 5)=: Every Monday of May
+- =(sun 12)=: Every Sunday of December
+
+***** Verbose-Month syntax
+
+You can substitute a numeric month with a verbose month, with a three letter
+abbreviation. For example:
+
+- =(sat jan)=: Every Saturday of January
+- =(mon may)=: Every Monday of May
+- =(sun dec)=: Every Sunday of December
+
+***** Year-Month-Day scope
+
+You can define a job to run given an year, a month and a day using the syntax
+=(<day> <month> <year>)=. For example:
+
+- =(6 5 2023)=: May 6th of 2023
+- =(1 1 1970)=: January 1st of 1970
+- =(19 1 2038)=: January 19th of 2038
+
+**** Matching expressions
+
+In place of a literal field, you can use a matching expression that will match
+the certain element given some expression boundaries.
+
+***** match-any-field
+
+A =*= token matches any value of the field it's in. For example:
+
+- =(* 3)=: Every day of March
+- =(14 *)=: Every 14th day of every month
+- =(* *)=: Every day of every month
+
+***** match-any-predicate
+
+A 1-nested list makes the job match in any of its predicates. It has the syntax
+=((<expression> ...))=, where =<expression>= is a element of a job expression.
+For example:
+
+- =((25 31) dec)=: Every December 25th or 31st
+- =(1 (jan dec))=: Every 1st of January or 1st of December
+- =((1 10) (mar aug))=: Every 1st of March, 1st of August, 10th of March or 10th
+  of August
+
+***** match-range-field
+
+A =-= expression matches a value of a field whose LHS and RHS are the lower and
+upper bounds respectively. It has the syntax =(- <lower-bound> <upper-bound>
+<step>?)=. For example:
+
+- =(* (- jan mar))=: Every day of January, February or March
+- =((- 1 20) aug)=: Every day of August from 1 to 20
+- =((- 10 20) (- jan aug))=: Every day from January to August, from 10 to 20
+
+A third field indicates a step. For example:
+
+- =((- * * 3) 1)=: Every three days in January
+- =((- 10 * 2) *)=: Every two days in every month, starting from the 10th day
+
+You can ommit fields with =*=. Range fields can also be elements of
+=match-any-predicate=, for example:
+
+- =((1 (- 10 20)) jan)=: Every 1st of January, or 10th through 20th of January
+
+The maximum nesting of =match-any-predicate= is 2. Meaning the example above
+shows the deepest you can nest matchers.
+
+**** Job identification
+
+A job can be identified as the third argument of a job expression, after the
+time scope. Jobs are lists with the job names as elements.
+
+For example:
+
+#+begin_src scheme
+  (job (25 12) (christmas))
+#+end_src
+
+If a time-scope matches a job, then the job name(s) will be written to /STDOUT/.
+You can use something like a shell script to add actions to these jobs (using
+=while read= and /shell globs/, for example).
+
+*** Schedl invocation
+
+There aren't many options on =schedl=. The only one that actually matters is
+=-k=: if =schedl= is called with this option, then it won't update the
+=jobfile=.
+
+** How it works
+
+=schedl= will check the =mtime= of the file and take *that* as the last time the
+file did its jobs. It will then see how many jobs happened between then and now.
+
+If given the =--dry= or =-k= flag, it will not update the =mtime= after
+accessing the file. The default behavior is to update it.
