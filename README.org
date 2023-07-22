@@ -162,3 +162,10 @@ file did its jobs. It will then see how many jobs happened between then and now.
 
 If given the =--dry= or =-k= flag, it will not update the =mtime= after
 accessing the file. The default behavior is to update it.
+
+In the project repository root, there's a file called =utils/edit-jobfile.sh=.
+You can use it to edit the jobfile without changing the way =schedl= would
+interpret it. Invoke it like:
+
+=./utils/edit-jobfile.sh jobfile editor=, where =editor= is an optional
+argument, you can also pass it as the environment varibale =EDITOR=.
