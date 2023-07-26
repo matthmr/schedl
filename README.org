@@ -19,13 +19,18 @@ AOT-compiled by =guile=. The =Makefile= does provide some targets:
 
 and some variables:
 
-- =SCHEMER=: Scheme interpreter to run the test suite with (=guile=)
 - =PREFIX=: install prefix (=/usr/local/=)
 - =INFODIR=: info prefix, relative to =PREFIX= (=${PREFIX}/share/info/dir/=)
 - =DOCS=: =y= or =n= for compiling and installing documentation (=y=)
 
 Again, you can use the script as is, without needing to install it. It's
 recomended you run the test suite, however.
+
+You can pinpoint errors by running:
+
+#+begin_src sh
+  $ make test | grep -A3 -F 'FAIL'
+#+end_src
 
 ** Using
 

@@ -1,4 +1,3 @@
-SCHEMER?=guile
 PREFIX?=/usr/local/
 DOCS?=y
 INFODIR?=${PREFIX}/info/dir
@@ -22,7 +21,7 @@ docs:
 	                             (org-texinfo-export-to-info))"
 
 test:
-	tests/unit.scm
+	tests/unit.scm 2>/dev/null
 
 help:
 	@echo "make test: runs the test suite"
