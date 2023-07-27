@@ -1,0 +1,4 @@
+The `interactive' test is meant to be 'sourced' by the Scheme interpreter, as it loads
+the `schedl' file, and interactively tests it.
+
+The `unit.scm' as a target of the `Makefile'. It is meant to test `schedl'.
