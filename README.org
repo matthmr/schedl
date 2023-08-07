@@ -26,11 +26,7 @@ and some variables:
 Again, you can use the script as is, without needing to install it. It's
 recomended you run the test suite, however.
 
-You can pinpoint errors by running:
-
-#+begin_src sh
-  $ make test | grep -A3 -F 'FAIL'
-#+end_src
+You can pinpoint errors by running =make tests= or =make failed-tests=.
 
 ** Using
 
@@ -56,7 +52,7 @@ Each job expression is defined with the =job= macro of the following form:
 Time scopes are scheme lists that serve as the first argument for a job
 expression. The main time scopes are of the form:
 
-***** Month-Day scope
+***** Day-Month scope
 
 You can define a job to run given a month and a day using the syntax =(<day>
 <month>)=. For example:
@@ -83,7 +79,7 @@ abbreviation. For example:
 - =(mon may)=: Every Monday of May
 - =(sun dec)=: Every Sunday of December
 
-***** Year-Month-Day scope
+***** Day-Month-Year scope
 
 You can define a job to run given an year, a month and a day using the syntax
 =(<day> <month> <year>)=. For example:
@@ -142,17 +138,53 @@ shows the deepest you can nest matchers.
 **** Job identification
 
 A job can be identified as the third argument of a job expression, after the
-time scope. Jobs are lists with the job names as elements.
+time scope. Jobs are lists with job-scopes as elements.
 
 For example:
 
 #+begin_src scheme
-  (job (25 12) (christmas))
+  (job (25 12) ((christmas "It's christmas")))
 #+end_src
 
-If a time-scope matches a job, then the job name(s) will be written to /STDOUT/.
+A =job-scope= is of the form:
+
+#+begin_src scheme
+  (<job-name> <job-description>)
+#+end_src
+
+where =job-description= is a string. It can also have this form:
+
+#+begin_src scheme
+  (<job-name> <job-description> . <job-execve>)
+#+end_src
+
+Where =job-execve= is an =execve(2)= compatible string. For example:
+
+#+begin_src scheme
+  (job (* *) ((every-day "Script to run everyday" . "echo hello world")))
+#+end_src
+
+If a =time-scope= matches a job, then the job name and description will be
+written to /STDOUT/ following the following format:
+
+#+begin_src text
+  JOB: <job-name> <job-description>
+#+end_src
+
+or, in the case =job-execve= is provided:
+
+#+begin_src text
+  DO: <job-execve>
+  JOB: <job-name> <job-description>
+#+end_src
+
+For compatibility's sake, it's recomended to have it so that =job-name= is a
+valid file name in your file system.
+
 You can use something like a shell script to add actions to these jobs (using
-=while read= and /shell globs/, for example).
+=while read= and /REGEXPS/, for example). In the project repository root,
+there's a file called =utils/schedl-handler-example.sh=, which you can follow
+the comments and edit it to get an example handler.
 
 *** Schedl invocation
 
@@ -172,5 +204,34 @@ In the project repository root, there's a file called =utils/edit-jobfile.sh=.
 You can use it to edit the jobfile without changing the way =schedl= would
 interpret it. Invoke it like:
 
-=./utils/edit-jobfile.sh jobfile editor=, where =editor= is an optional
-argument, you can also pass it as the environment varibale =EDITOR=.
+#+begin_src sh
+  ./utils/edit-jobfile.sh jobfile editor
+#+end_src
+
+where =editor= is an optional argument, you can also pass it as the environment
+varibale =EDITOR=.
+
+*** Working with =schedl-handler-example.sh=
+
+*NOTE*: If you want to write your own implementation for =schedl=, feel free to
+ignore this section.
+
+In the case you want to use the default example as your frontend for =schedl=,
+here are some things you need to consider:
+
+- job descriptions may *not* start with a =!= character::
+  + =(job ... ((foo "foo bar")))= is fine, =(job ... ((foo "!foo bar")))= isn't
+- job names may be valid file system file names:
+  + =(job ... ((foo-bar ...)))= is fine, =(job ... ((foo/bar ...)))= isn't
+- job names may *not* end with =.sh=; that would make future handlers that look
+  for the executable part of your job confused:
+  + =(job ... ((foosh ...)))= is fine, =(job ... ((foo.sh ...)))= isn't
+
+The way this handler works (at least on my system), is that it gets called as
+soon as the user logs in, then another script looks for files under
+=/tmp/schedl=, and it either prints it, or prompts for execution. The file
+=/tmp/schedl/session-lock= prevents =schedl= from running again. It's not
+created in this script, it should be created on the one that handles the files
+created by this script (which I didn't added to this repository because it
+doesn't make sense to be here, but if you want to see an example, see:
+https://github.com/matthmr/scripts/blob/master/x/xsession.)

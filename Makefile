@@ -20,9 +20,21 @@ docs:
 	                             (find-file \"README.org\")\
 	                             (org-texinfo-export-to-info))"
 
-test:
-	tests/unit.scm 2>/dev/null
+tests:
+	tests/unit-ts.scm 2>/dev/null
+	tests/unit-path.scm 2>/dev/null
+
+failed-tests:
+	@echo -e "\non \`unit-ts.scm':"
+	@tests/unit-ts.scm -n 2>/dev/null | grep -A3 '^FAIL' || echo -e "All tests pass\n---"
+	@echo -e "\non \`unit-path.scm':"
+	@tests/unit-path.scm -n 2>/dev/null | grep -A3 '^FAIL' || echo -e "All tests pass\n---"
 
 help:
-	@echo "make test: runs the test suite"
+	@echo "make tests: runs the test suite"
+	@echo "make failed-tests: runs a simplified version of the test suite"
+	@echo "make docs: make documentation"
 	@echo "make install: installs to \$PREFIX"
+
+.PHONY: tests failed-tests \
+	install docs help

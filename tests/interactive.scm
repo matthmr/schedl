@@ -2,7 +2,8 @@
 
 (define-module (interactive)
   #:export (unit unit-ex-fail unit-ex-succ
-                 sched/int/unit)
+                 sched/int/unit
+                 unit-log-end)
   #:declarative? #f)
 
 ;;;; Interactive schedl
@@ -30,10 +31,14 @@
         (set-file (memq #:file thing)))
     (when set-now
       (let ((now (list-head (cdr set-now) 3)))
-        (apply sched/int/set-now now)))
+        (apply sched/int/set-now now)
+        (set! now/wday
+          (apply sched/time/wday-from-ts now))))
     (when set-file
       (let ((file (list-head (cdr set-file) 3)))
-        (apply sched/int/set-file file)))))
+        (apply sched/int/set-file file)
+        (set! file/wday
+          (apply sched/time/wday-from-ts file))))))
 
 ;;;; Interactive functions
 
@@ -61,19 +66,13 @@
 (define units-failed 0)
 
 (define unit-succ-fmt
-  "[SUCCESS: ~a => ~a]
-  -> on ts/unit: ~a
-  -> on ts/file: ~a
-  -> on ts/now: ~a\n---\n")
+  "SUCCESS: expected ~a, got ~a\n")
 
 (define unit-fail-fmt
-  "[FAIL: ~a => ~a]
-  -> on unit: ~a
-  -> on ts/file: ~a
-  -> on ts/now: ~a\n---\n")
+  "FAIL: expected ~a, got ~a\n")
 
 (define unit-log-end-fmt
-  "\n[DONE]: [~a/~a] passed\n")
+  "\nDONE: [~a/~a] passed\n")
 
 (define (unit-succ ts/unit ts/file ts/now expect)
   (format #t unit-succ-fmt
@@ -86,11 +85,14 @@
   (inc units-failed)
   (inc units-done))
 
-(define (unit-log-end)
+(define (unit-log-end . exit?)
   (format #t unit-log-end-fmt
           (- units-done units-failed) units-done)
   (set! units-done 0)
-  (set! units-failed 0))
+  (set! units-failed 0)
+  (if (and (not (null? exit?))
+           (car exit?))
+      (exit)))
 
 (define-syntax unravel-ts
   (syntax-rules ()
@@ -108,6 +110,9 @@
     (apply
      (if passed? unit-succ unit-fail)
      (list ts/unit ts/file ts/now expect))
+    (format #t "  on ts/unit: ~a\n  on ts/file: ~a\n  on ts/now: ~a\n---\n" ts/unit
+            (list file/day file/mon file/year)
+            (list now/day now/mon now/year))
     ))
 
 (define-syntax unit
@@ -131,16 +136,10 @@
 ;; Similar to default init, but with color
 (define (sched/int/use-unit)
   (set! unit-succ-fmt
-        "[\x1b[32mSUCCESS\x1b[0m: ~a => ~a]
-  -> on ts/unit: ~a
-  -> on ts/file: ~a
-  -> on ts/now: ~a\n---\n")
+        "\x1b[32mSUCCESS\x1b[0m: expected ~a, got ~a\n")
 
   (set! unit-fail-fmt
-        "[\x1b[31mFAIL\x1b[0m: ~a => ~a]
-  -> on unit: ~a
-  -> on ts/file: ~a
-  -> on ts/now: ~a\n---\n")
+        "\x1b[31mFAIL\x1b[0m: expected ~a, got ~a\n")
 
   (set! unit-log-end-fmt
-        "\n[\x1b[33mDONE\x1b[0m]: [~a/~a] passed\n"))
+        "\n\x1b[33mDONE\x1b[0m: [~a/~a] passed\n"))
