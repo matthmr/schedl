@@ -39,7 +39,7 @@ See =schedl --help=.
 *** jobfile syntax
 
 jobfiles are scheme files that contain jobs to run on a /time scope/. A time
-scope should be any combination of Year-Month-Day and/or Month-Day scopes.
+scope should be any combination of Day-Month-Year and/or Day-Month scopes.
 
 Each job expression is defined with the =job= macro of the following form:
 
@@ -127,13 +127,30 @@ A third field indicates a step. For example:
 - =((- * * 3) 1)=: Every three days in January
 - =((- 10 * 2) *)=: Every two days in every month, starting from the 10th day
 
-You can ommit fields with =*=. Range fields can also be elements of
+You can omit fields with =*=. Range fields can also be elements of
 =match-any-predicate=, for example:
 
 - =((1 (- 10 20)) jan)=: Every 1st of January, or 10th through 20th of January
 
 The maximum nesting of =match-any-predicate= is 2. Meaning the example above
 shows the deepest you can nest matchers.
+
+If you omit the LHS, it's assumed to be the *primary* of your field:
+
+- January in the month field
+- day 1 in the numeric day field
+- Sunday in the week day field
+
+If LHS is omitted, it won't support step, unless RHS is also omitted.
+
+If you omit the RHS, it's assumed to be the *last* of your field:
+
+- December in the month field
+- day 31, 30 or 28 in the numeric day field (depending on the current matched
+  month)
+- Saturday in the week day field
+
+The year field has no primaries nor lasts.
 
 **** Job identification
 
