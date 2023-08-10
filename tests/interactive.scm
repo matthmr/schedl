@@ -85,14 +85,15 @@
   (inc units-failed)
   (inc units-done))
 
-(define (unit-log-end . exit?)
-  (format #t unit-log-end-fmt
-          (- units-done units-failed) units-done)
-  (set! units-done 0)
-  (set! units-failed 0)
-  (if (and (not (null? exit?))
-           (car exit?))
-      (exit)))
+(define (unit-log-end)
+  (let ((passed (- units-done units-failed))
+        (done units-done)
+        (failed units-failed))
+    (set! units-done 0)
+    (set! units-failed 0)
+    (format #t unit-log-end-fmt passed done)
+    (exit (if (= failed 0) 0 1))
+    ))
 
 (define-syntax unravel-ts
   (syntax-rules ()

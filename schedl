@@ -1,0 +1,1339 @@
+#!/usr/bin/guile \
+-e sched/main
+!#
+
+;;; TODO: this could take a scheme program as an output handler
+;;; TODO: optimize range functions
+;;; TODO: the testing could also be done on all paths for `ts'
+
+;;;; TERMINOLOGY:
+;;; over-low/proper-in/over-high:
+;;; . . . * . . . . * . . .
+;;;     f   n                over-low (even if `n' crosses the upper bound)
+;;;         f   n            proper-in
+;;;               f   n      over-high
+
+;;;; INTERNALS
+
+(define sched/errors
+  '((EMISSINGJOB . "Missing JOBFILE")
+    (EINVALID . "Invalid option")))
+
+(define (sched/error ecode)
+  (error (string-append
+          "\x1b[91m[ !! ]\x1b[0m \x1b[100m"
+          (cdr (assoc ecode sched/errors))
+          ". See `--help'\x1b[0m")))
+
+;;;; UTILS
+
+(define-syntax sched/new-for!
+  (syntax-rules ()
+    ((sched/new-for! the-list the-item)
+      (if (null? the-list)
+          (set! the-list `(,the-item))
+          (append! the-list `(,the-item))))))
+
+(define-syntax bool
+  (syntax-rules ()
+    ((bool exp)
+      (if exp #t #f))))
+
+(define-syntax bool->int
+  (syntax-rules ()
+    ((bool->int exp)
+      (if exp 1 0))))
+
+(define-syntax return-if
+  (syntax-rules ()
+    ((return-if exp else-then)
+      (if exp exp else-then))
+    ((return-if exp)
+      (if exp exp #f))))
+
+(define-syntax boolean-when
+  (syntax-rules ()
+    ((boolean-when exp then ...)
+      (if exp
+          (begin then ...)
+          #f))))
+
+(define-syntax boolean-when-or-t
+  (syntax-rules ()
+    ((boolean-when exp then ...)
+      (if exp
+          (begin then ...)
+          #t))))
+
+(define-syntax boolean-unless
+  (syntax-rules ()
+    ((boolean-unless exp then ...)
+      (if exp
+          #t
+          (begin then ...)))))
+
+(define-syntax boolean-unless-or-f
+  (syntax-rules ()
+    ((boolean-unless exp then ...)
+      (if exp
+           #f
+           (begin then ...)))))
+
+(define-syntax xor
+  (syntax-rules ()
+    ((xor a b)
+      (and (or a b) (not (and a b)))
+     )))
+
+(define-syntax if-eq-or-under
+  (syntax-rules ()
+    ((if-eq-or-under a b . c)
+      (or (and (= a b) . c) (< a b))
+     )))
+
+(define-syntax if-eq-or-over
+  (syntax-rules ()
+    ((if-eq-or-over a b . c)
+      (or (and (= a b) . c) (> a b))
+     )))
+
+(define (sched/get attr list)
+  (if list
+      (let ((e (memq attr list)))
+        (if e (cadr e) #f))
+      #f))
+
+(define (sched/trait/get trait list)
+  (if (and (list? list) (not (null? list)))
+      (let ((trait-assoc (assoc trait list)))
+        (if trait-assoc
+            (if (null? (cdr trait-assoc))
+                trait-assoc ;; the root of the last matched assoc
+                (cadr trait-assoc)) ;; the car of the cdr of the assoc
+            #f))
+      #f))
+
+;; 0-nest version of `sched/trait/get'
+(define (sched/trait/get* traits list)
+  (if (and (list? traits) (not (null? traits))
+           (list? list) (not (null? list)))
+
+      ;; iterate through the elements of `the-traits'
+      (let do-get ((the-traits traits)
+                   (the-list list))
+        (let* ((trait-assoc (assoc (car the-traits) the-list))
+               (the-new-traits (cdr the-traits)))
+          (if trait-assoc
+              (if (null? (cdr trait-assoc))
+                  trait-assoc
+                (if (null? the-new-traits)
+                    (cadr trait-assoc)
+                    (do-get the-new-traits (cadr trait-assoc))))
+              #f)))
+      #f))
+
+(define (smaller? a b)
+  (if (< a b) a b))
+
+(define (bigger? a b)
+  (if (> a b) a b))
+
+;;;; SET INTERNALS
+
+(define (sched/job/insert time-scope jobs)
+  (sched/new-for! sched:jobs `(,time-scope ,jobs)))
+
+;;;; INTERNALS VARIABLES
+
+(define sched:jobs    (list)) ;; list of defined jobs
+;; (define sched:matches (list)) ;; list of matched jobs
+(define sched:dry?    #f)     ;; `--dry' predicate
+
+(define sched:now     (localtime (current-time)))
+(define sched:jobfile-now 0)
+
+(define now/day  (tm:mday sched:now))
+(define now/mon  (+ 1 (tm:mon sched:now)))
+(define now/year (+ 1900 (tm:year sched:now)))
+(define now/wday (+ 1 (tm:wday sched:now)))
+
+(define file/day  0)
+(define file/mon  0)
+(define file/year 0)
+(define file/wday 0)
+
+;;;; TIME FUNCTIONS
+
+;; For internal use:
+;;   Returns the offset because of leap years
+(define (sched/time/yday-off year)
+  (let ((diff (- year 1901)))
+    (if (= diff 0) 0
+      ;; subtract the difference of @/100 from @/400 from @/4 to account for
+      ;; over-counting
+      (let ((/4 (floor/ diff 4))
+            (/100 (floor/ diff 100))
+            (/400 (floor/ (+ 300 diff) 400)))
+        (- /4 (- /100 /400))))
+    ))
+
+;; For internal use:
+;;   Returns the (numeric) wday of january 1st of a given year @year
+(define (sched/time/jan1-wday year)
+  (let* ((year (bigger? year 1900))
+         (diff
+           (+ (- year 1900)
+              (sched/time/yday-off year))))
+    (modulo (+ 2 (modulo diff 7)) 7)))
+
+;; For internal use:
+;;   Returns the `yday' value of the 1st of month @mon, and year @year
+(define (sched/time/mon1-yday mon year)
+  (let* ((*31 (* 31 (- mon 1)))
+         (diff
+           (if (<= mon 2) 0 ; jan
+               (+ (- 3 (sched/time/leap-year? year)) ; feb
+                  (floor/ (- (smaller? mon 7) 3) 2) ; mar-jul
+                  (if (<= mon 8) 0 ; aug-dec
+                      (floor/ (- mon 8) 2))))
+           ))
+    (+ (- *31 diff) 1)))
+
+;; Numeric boolean for if @year is a leap year
+(define (sched/time/leap-year? year)
+  (bool->int
+    (or (= 0 (modulo year 400))
+        (and (= 0 (modulo year 4))
+             (< 0 (modulo year 100))))
+    ))
+
+;; Numeric return of how many days in a month @mon given a year @year
+(define (sched/time/days-in-month mon year)
+  (if (<= mon 7) ;; jan-jul
+    (if (= mon 2) ;; feb
+        (+ 28 (sched/time/leap-year? year))
+        (- 31 (bool->int (= 0 (modulo mon 2)))))
+    ;; aug-dec
+    (+ 30 (bool->int (= 0 (modulo mon 2))))))
+
+;; Numeric return of how many days in a year @year
+(define (sched/time/days-in-year year)
+  (+ 365 (sched/time/leap-year? year)))
+
+;; Returns the wday for the first of mon @ts/mon given year @ts/year
+(define (sched/time/mon1-wday ts/mon ts/year)
+  (+ (modulo (+ (- (sched/time/jan1-wday ts/year) 1)
+                (- (sched/time/mon1-yday ts/mon ts/year) 1))
+             7) 1))
+
+;; Returns the wday for proper `ts': @ts/day, @ts/mon, @ts/year
+(define (sched/time/wday-from-ts ts/day ts/mon ts/year)
+  (+ (modulo (+ (- (sched/time/mon1-wday ts/mon ts/year) 1)
+                (- ts/day 1))
+             7) 1))
+
+(define sched/week->day/table
+  '((sun . 1)
+    (mon . 2)
+    (tue . 3)
+    (wed . 4)
+    (thu . 5)
+    (fri . 6)
+    (sat . 7)))
+
+(define sched/week '(sun mon tue wed thu fri sat))
+
+(define sched/vmon->mon/table
+  '((jan . 1)
+    (feb . 2)
+    (mar . 3)
+    (apr . 4)
+    (may . 5)
+    (jun . 6)
+    (jul . 7)
+    (aug . 8)
+    (sep . 9)
+    (oct . 10)
+    (nov . 11)
+    (dec . 12)))
+
+(define sched/vmon '(jan feb mar apr may jun jul aug sep oct nov dec))
+
+;; Translate verbose week day @week to a numeric week day
+(define (sched/week->day week)
+  (cdr (assoc week sched/week->day/table)))
+
+;; Translate verbose month @mon to a numeric month
+(define (sched/vmon->mon vmon)
+  (cdr (assoc vmon sched/vmon->mon/table)))
+
+;; Generic function to bound-normalize a range, with an optional step. If @step?
+;; is passed, the boundaries have to be either the same, or step normalized. It
+;; handles the stub case where @step? is 1
+(define (sched/ts/bound-norm low high . step?)
+  (if (= low high) low
+      (if (not (null? step?))
+          (list low high (car step?))
+          (list low high))))
+
+;; Generic function for in-range inclusion, with required step. Optinal returns
+;; of a proper range or proper value
+(define (sched/ts/range-from low high step low* high*)
+  ;; variables with `-step' suffix means their modular value, variables with
+  ;; `-in-range' suffix means their closest (rounded *down*) value in range that
+  ;; respects the @step. It handles the stub case where @step is 1
+  (let* ((high* (if (eq? high '*) high*
+                    (smaller? high* high) ; over-high
+                  ))
+         (low* (if (> low* low) low*      ; over-low
+                   low))
+
+         (low*-step (modulo (- low* low) step))
+         (low*-in-range (- low* low*-step))
+         ;; NOTE: ^this might return an unreachable previous amount, it doesn't
+         ;; matter because we're compesating for it below
+
+         (high*-step (modulo (- high* low*-in-range) step))
+         (high*-in-range (- high* high*-step)))
+
+    (if (= 0 low*-step)
+        (sched/ts/bound-norm low* (bigger? low* high*-in-range) step)
+        (let ((low*:am (+ low*-in-range step)))
+          ;; FIXME: is the first expression in the `and' below needed?
+          (boolean-when (and (>= high* low*:am)
+                             (<= low*:am high*-in-range))
+            (sched/ts/bound-norm low*:am high*-in-range step))))
+    ))
+
+;; Next instance given current bound-normalized state @cur, @high and @step.
+;; Optional return.
+(define (sched/ts/next cur high step)
+  (let ((next (+ cur step)))
+    (if (<= next high)
+        next #f)))
+
+;;;; JOBFILE FUNCTIONS
+
+;; */match and */range functions can generate ranges from globs. All
+;; ranges coming from any function are assumed to be bound-normalized, that
+;; is, globs will return a single number instead of a list if the years are
+;; the same. Ranges without step pass their step as 1 when a */match or
+;; */range function processes them
+
+;;; YEAR FUNCTIONS
+
+(define (sched/ts/year/match ts/year _)
+  (cond
+    ((eq? ts/year '*)
+      (sched/ts/bound-norm file/year now/year))
+    ;; general catch-all for year: it doesn't have to be complicated
+    ((and (<= file/year ts/year)
+          (>= now/year ts/year)) ts/year)
+    (else #f)))
+
+(define (sched/ts/year/range low-high--step? _)
+  (let* ((low (car low-high--step?))
+         (high (cadr low-high--step?))
+         (step (sched/ts/step-from low-high--step?))
+
+         (low/* (eq? low '*))
+         (high/* (eq? high '*)))
+    (cond
+      ;; step doesn't apply to these conditions:
+      ((and low/* high/*)
+        (sched/ts/year/match '* 0))
+      (low/*
+        (if (<= now/year high)
+            (sched/ts/bound-norm file/year now/year)
+            (boolean-when (<= file/year high) ; over-high
+              (sched/ts/bound-norm file/year high))))
+      ;; ---
+
+      (high/*
+        (if (>= file/year low)
+            (sched/ts/range-from low high step file/year now/year)
+            (boolean-when (>= now/year low) ; over-low
+              (sched/ts/range-from low high step file/year now/year))))
+
+      (else
+        (boolean-when
+          (or (and (< file/year low)
+                   (>= now/year low)) ; over-low
+              (and (<= file/year high)
+                   (> now/year high)) ; over-high
+              (and (<= now/year high)
+                   (>= now/year low)) ; proper-in
+              )
+          (sched/ts/range-from low high step file/year now/year))))
+    ))
+
+;;; MONTH FUNCTIONS
+
+;; Month functions return a Cons whose Car is the month ts value, and whose Cdr
+;; is the (possibly) new value of `ts/year'. Day functions expect this alone as
+;; the context:
+;;   (ts-month . ts-year)
+;;
+;; In indefinite months with definite years, we have that @ts-month is [1]:
+;;   (ts-month-low ts-month-high ts-month-step?)
+;;
+;; In indefinite months with indefinite years, we have that @ts-month is [2]:
+;;   (ts-mon-low-for-low ts-mon-high-for-high ts-mon-full-for-full)
+;; Where each element has the same form as [1], or is a proper @ts-month
+
+;; Normalize the months from verbose to 1-12 notation. Keeps `*' notation
+(define (sched/ts/mon/norm ts/mon)
+  (if (or (number? ts/mon) (eq? ts/mon '*)) ts/mon
+      (sched/vmon->mon ts/mon)))
+
+;; Amortize a `ts/year' range based on a definite @ts/mon
+(define (sched/ts/mon/year:am-range
+          ts/year/low ts/year/low:mon
+          ts/year/high ts/year/high:mon
+          ts/year/step
+          ts/mon)
+  (let* ((ts/year/low:am
+           (+ ts/year/low
+             (if (> ts/year/low:mon ts/mon)
+                 ts/year/step 0)))
+         (ts/year/high:am
+           (- ts/year/high
+              (if (< ts/year/high:mon ts/mon)
+                  ts/year/step 0)))
+
+         (ts/year:am
+           (boolean-when (<= ts/year/low:am ts/year/high:am)
+             (sched/ts/bound-norm ts/year/low:am ts/year/high:am))))
+
+  (boolean-when ts/year:am
+    (if (list? ts/year:am)
+        (append ts/year:am (list ts/year/step))
+        ts/year:am))))
+
+(define (sched/ts/mon/match ts/mon ts/year)
+  (let ((ts/mon (sched/ts/mon/norm ts/mon))
+        (mon/* (eq? ts/mon '*))
+
+        (jan (sched/vmon->mon 'jan))
+        (dec (sched/vmon->mon 'dec)))
+    (if (list? ts/year)
+        (let* ((ts/year/low (car ts/year))
+               (ts/year/high (cadr ts/year))
+               (ts/year/step (sched/ts/step-from ts/year))
+
+               (full-range* (list jan dec))
+
+               (file<low? (< file/year ts/year/low))
+               (now>high? (> now/year ts/year/high)))
+          (if mon/*
+              (cons (list
+                      (if file<low? full-range*
+                          (sched/ts/bound-norm file/mon dec))
+                      (if now>high? full-range*
+                          (sched/ts/bound-norm jan now/mon))
+                      full-range*)
+                    ts/year)
+              ;; definite month:
+              (let ((ts/year:am
+                      (sched/ts/mon/year:am-range
+                        ts/year/low (if file<low? jan file/mon)
+                        ts/year/high (if now>high? dec now/mon)
+                        ts/year/step
+                        ts/mon)))
+                (boolean-when ts/year:am
+                  (cons ts/mon ts/year:am)))
+              ))
+
+        ;; definite year: (this can be bound-normalized)
+        (if mon/*
+            (cons (sched/ts/bound-norm
+                    (if (= file/year ts/year) file/mon jan)
+                    (if (= now/year ts/year) now/mon dec))
+                  ts/year)
+            ;; definite month:
+            (boolean-when
+             (if (= file/year ts/year)
+                 (and (<= file/mon ts/mon)
+                      (or (> now/year ts/year)
+                          (>= now/mon ts/mon)))
+                 ;; (< file/year ts/year)
+                 (or (and (= now/year ts/year)
+                          (>= now/mon ts/mon))
+                     (> now/year ts/year)))
+             (cons ts/mon ts/year))))
+    ))
+
+;; Matches a month range with a definite year
+(define (sched/ts/mon/range:definite-year low high step ts/year)
+  (let ((now/year:over-low?
+          (or (and (= now/year ts/year)
+                   (>= now/mon low))
+              (> now/year ts/year))) ; over-low in either month in the
+                                     ; same year, or another year
+        )
+    (boolean-when
+      (or (and (= file/year ts/year)
+               (or (and (<= file/mon high)
+                        (or (>= file/mon low) now/year:over-low?))
+                   (and (> file/mon high) now/year:over-low?)))
+          (and (< file/year ts/year)
+               now/year:over-low?))
+      (let ((ts/mon/range:am
+              (sched/ts/range-from low high step
+                (if (= file/year ts/year) file/mon low)
+                (if (= now/year ts/year) now/mon high))))
+        (boolean-when ts/mon/range:am
+          (cons ts/mon/range:am ts/year)))
+      )))
+
+(define (sched/ts/mon/range low-high--step? ts/year)
+  (let* ((low (sched/ts/mon/norm (car low-high--step?)))
+         (low/* (eq? low '*))
+         (high (sched/ts/mon/norm (cadr low-high--step?)))
+         (high/* (eq? high '*))
+         (step (sched/ts/step-from low-high--step?))
+
+         (ts/year/list? (list? ts/year))
+         (ts/year/low (boolean-when ts/year/list?
+                        (car ts/year)))
+         (ts/year/high (boolean-when ts/year/list?
+                         (cadr ts/year)))
+         (ts/year/step (boolean-when ts/year/list?
+                         (sched/ts/step-from ts/year)))
+
+         (jan (sched/vmon->mon 'jan))
+         (dec (sched/vmon->mon 'dec)))
+    (cond
+      ;; step doesn't apply to these conditions:
+      ((and low/* high/*)
+        (sched/ts/mon/range (list jan dec step) ts/year))
+      (low/* ; the same as lower-bounding to `jan'
+        (sched/ts/mon/range (list jan high 1) ts/year))
+      ;; ---
+
+      (high/* ; the same as upper-bounding to `dec'
+        (sched/ts/mon/range (list low dec step) ts/year))
+
+      (else
+        (if ts/year/list?
+            (let*
+              ((ts/year/low:am
+                 (+ ts/year/low
+                    (if (and (= file/year ts/year/low) (> file/mon high))
+                        ts/year/step 0)))
+               (ts/year/high:am
+                 (- ts/year/high
+                    (if (and (= now/year ts/year/high) (< now/mon low))
+                        ts/year/step 0)))
+
+               (ts/year:am
+                 ;; if they invert, that guarantees we're outside the range
+                 (boolean-when (<= ts/year/low:am ts/year/high:am)
+                   (sched/ts/bound-norm
+                     ts/year/low:am ts/year/high:am ts/year/step)))
+               (ts/mon:am
+                 (if (list? ts/year:am)
+                     (let* ((full-range
+                              (sched/ts/range-from low high step
+                                jan dec))
+
+                            (low:am
+                              (if (= file/year ts/year/low:am)
+                                  (sched/ts/range-from low high step
+                                    (bigger? file/mon low) dec)
+                                  full-range))
+                            (high:am
+                              (if (= now/year ts/year/high:am)
+                                  (sched/ts/range-from low high step
+                                    jan (smaller? now/mon high))
+                                  full-range))
+
+                            (ts/year/low:am
+                              (if low:am ts/year/low:am
+                                (+ ts/year/low:am ts/year/step)))
+                            (ts/year/high:am
+                              (if high:am ts/year/high:am
+                                (- ts/year/high:am ts/year/step))))
+
+                       ;; this *can* become false if `ts/year/*:am' had not
+                       ;; been amortized, but the range did not fit in both
+                       (set! ts/year:am
+                         (boolean-when
+                           (<= ts/year/low:am ts/year/high:am)
+                           (sched/ts/bound-norm
+                             ts/year/low:am ts/year/high:am
+                             ts/year/step)))
+
+                       (boolean-when ts/year:am
+                         (if (list? ts/year:am)
+                             (list
+                               (if (not low:am) full-range
+                                   low:am)
+                               (if (not high:am) full-range
+                                   high:am)
+                               full-range
+                               step)
+
+                             ;; (became) definite year:
+                             (cond
+                               ((and (not low:am)
+                                     (not high:am)) full-range)
+                               ((not low:am) high:am)
+                               ((not high:am) low:am)))
+                         ))
+
+                     ;; (became) definite year:
+                     (boolean-when ts/year:am
+                       (sched/ts/range-from low high step
+                         (if (= file/year ts/year/low:am)
+                             (bigger? file/mon low) low)
+                         (if (= now/year ts/year/high:am)
+                             (smaller? now/mon high) high)))
+                     )))
+          (boolean-when ts/mon:am
+            (cons ts/mon:am ts/year:am)))
+
+            ;; definite year:
+            (sched/ts/mon/range:definite-year low high step
+              ts/year)
+        )))
+    ))
+
+;;; DAY FUNCTIONS
+;; day functions should only trigger if the match was more than only on file/*,
+;; i.e., upper-bounded by now/*, and over file/*
+
+;; Runs a generic day*-match with a given target day @target-days, and the
+;; amount of days in the matching month @ts/mon/days
+(define (sched/ts/day/with-target target-days ts/mon/days same-file same-now)
+  (if same-file
+      (>= (- (if same-now now/day ts/mon/days) file/day)
+          target-days)
+      (or (not same-now) (>= (- now/day 1) target-days))))
+
+;; Functor for generic `day' match
+(define-syntax sched/ts/day/with-matcher
+  (syntax-rules ()
+    ((sched/ts/day/with-matcher matcher-type)
+      (let ((matcher
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,matcher-type "/match"))))
+            (iter*:mon
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,matcher-type "/match/iter:mon"))))
+            (iter*:year
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,matcher-type "/match/iter:year"))))
+            (match*
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,matcher-type "/match*")))))
+
+        ;; matcher
+        (primitive-eval
+          `(define (,matcher ts/day* ts/mon--year*)
+             (let* ((ts/mon (car ts/mon--year*))
+                    (ts/mon/list? (list? ts/mon))
+
+                    (ts/year (cdr ts/mon--year*))
+                    (ts/year/list? (list? ts/year)))
+               (cond
+                 (ts/year/list?
+                   (,iter*:year ts/day* ts/mon ts/year ts/mon/list?))
+                 (ts/mon/list?
+                   (,iter*:mon ts/day* ts/mon ts/year))
+                 (else
+                   (,match* ts/day* ts/mon ts/year)))
+             )))
+
+        ;; iter*:mon
+        (primitive-eval
+          `(define (,iter*:mon ts/day* ts/mon ts/year)
+             (let ((ts/mon/low (car ts/mon))
+                   (ts/mon/high (cadr ts/mon))
+                   (ts/mon/step (sched/ts/step-from ts/mon)))
+               (let iter ((ts/mon* ts/mon/low))
+                 (boolean-when ts/mon*
+                   (boolean-unless (,match* ts/day* ts/mon* ts/year)
+                     (iter (sched/ts/next ts/mon* ts/mon/high ts/mon/step)))))
+               )))
+
+        ;; iter*:year
+        (primitive-eval
+          `(define (,iter*:year ts/day* ts/mon ts/year ts/mon/list?)
+             (let* ((ts/year/low (car ts/year))
+                    (ts/year/high (cadr ts/year))
+                    (ts/year/step (sched/ts/step-from ts/year))
+
+                    (ts/mon:for-low
+                      (if ts/mon/list?
+                          (car ts/mon) ts/mon))
+                    (ts/mon:for-high
+                      (if ts/mon/list?
+                          (cadr ts/mon) ts/mon))
+                    (ts/mon:for-high/list? (list? ts/mon:for-high))
+                    (ts/mon:for-low/list? (list? ts/mon:for-low))
+
+                    (ts/mon:full-range
+                      (if ts/mon/list?
+                          (caddr ts/mon) ts/mon))
+                    (ts/mon:full-range/list? (list? ts/mon:full-range)))
+
+               (let iter ((ts/year* ts/year/low))
+                 (boolean-when ts/year*
+                   (boolean-unless
+                     (cond
+                       ((= ts/year* ts/year/low)
+                         (if ts/mon:for-low/list?
+                             (,iter*:mon ts/day*
+                               ts/mon:for-low ts/year*)
+                             (,match* ts/day*
+                               ts/mon:for-low ts/year*)))
+                       ((= ts/year* ts/year/high)
+                         (if ts/mon:for-high/list?
+                             (,iter*:mon ts/day*
+                               ts/mon:for-high ts/year*)
+                             (,match* ts/day*
+                               ts/mon:for-high ts/year*)))
+                       (else
+                          (if ts/mon:full-range/list?
+                            (,iter*:mon ts/day*
+                              ts/mon:full-range ts/year*)
+                            (,match* ts/day*
+                              ts/mon:full-range ts/year*))
+                         ))
+                     (iter (sched/ts/next ts/year* ts/year/high ts/year/step)))
+                   ))
+                 )))
+        #t))
+     ))
+
+;; Functor for generic `day' range
+(define-syntax sched/ts/day/with-ranger
+  (syntax-rules ()
+    ((sched/ts/day/with-ranger ranger-type)
+      (let ((ranger
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,ranger-type "/range"))))
+            (iter*:mon
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,ranger-type "/range/iter:mon"))))
+            (iter*:year
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,ranger-type "/range/iter:year"))))
+            (range*
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,ranger-type "/range*"))))
+
+            (matcher/iter*:mon
+              (string->symbol
+                (string-concatenate
+                  `("sched/ts/" ,ranger-type "/match/iter:mon")))))
+
+        ;; ranger
+        (primitive-eval
+          `(define (,ranger low-high--step? ts/mon--year*)
+             (let* ((low (car low-high--step?))
+                    (high (cadr low-high--step?))
+                    (step (sched/ts/step-from low-high--step?))
+
+                    (ts/mon (car ts/mon--year*))
+                    (ts/mon/list? (list? ts/mon))
+
+                    (ts/year (cdr ts/mon--year*))
+                    (ts/year/list? (list? ts/year)))
+               (cond
+                 (ts/year/list?
+                   (,iter*:year low high step ts/mon ts/year ts/mon/list?))
+                 (ts/mon/list?
+                   (,iter*:mon low high step ts/mon ts/year))
+                 (else
+                   (,range* low high step ts/mon ts/year)))
+               )))
+
+        ;; iter*:mon
+        (primitive-eval
+          `(define (,iter*:mon low high step ts/mon ts/year)
+             (let ((ts/mon/low (car ts/mon))
+                   (ts/mon/high (cadr ts/mon))
+                   (ts/mon/step (sched/ts/step-from ts/mon)))
+               (let iter ((ts/mon* ts/mon/low))
+                 (boolean-when ts/mon*
+                   (boolean-unless
+                     (,range* low high step ts/mon* ts/year)
+                     (iter (sched/ts/next ts/mon* ts/mon/high ts/mon/step)))
+                   ))
+               )))
+
+        ;; iter*:year
+        (primitive-eval
+          `(define (,iter*:year low high step ts/mon ts/year ts/mon/list?)
+             (let* ((ts/year/low (car ts/year))
+                    (ts/year/high (cadr ts/year))
+                    (ts/year/step (sched/ts/step-from ts/year))
+
+                    (ts/mon:for-low
+                      (if ts/mon/list?
+                          (car ts/mon) ts/mon))
+                    (ts/mon:for-high
+                      (if ts/mon/list?
+                          (cadr ts/mon) ts/mon))
+                    (ts/mon:for-high/list? (list? ts/mon:for-high))
+                    (ts/mon:for-low/list? (list? ts/mon:for-low))
+
+                    (ts/mon:full-range
+                      (if ts/mon/list?
+                          (caddr ts/mon) ts/mon))
+                    (ts/mon:full-range/list? (list? ts/mon:full-range)))
+               (let iter ((ts/year* ts/year/low))
+                 (boolean-when ts/year*
+                   (boolean-unless
+                     (cond
+                       ((= ts/year* ts/year/low)
+                         (if ts/mon:for-low/list?
+                             (,iter*:mon low high step
+                               ts/mon:for-low ts/year)
+                             (,range* low high step
+                               ts/mon:for-low ts/year)))
+                       ((= ts/year* ts/year/high
+                         (if ts/mon:for-high/list?
+                             (,iter*:mon low high step
+                               ts/mon:for-high ts/year)
+                             (,range* low high step
+                               ts/mon:for-high ts/year))))
+                       (else
+                         (if ts/mon:full-range/list?
+                           (,iter*:mon low high step
+                             ts/mon:full-range ts/year)
+                           (,range* low high step
+                             ts/mon:full-range ts/year))))
+                     (iter (sched/ts/next ts/year* ts/year/high ts/year/step)))
+                   ))
+               )))
+        #t))
+    ))
+
+;; (*)DAY FUNCTIONS
+
+(define (sched/ts/*day/match* ts/*day ts/mon ts/year)
+  (let ((*day/* (eq? ts/*day '*))
+        (ts/mon/days (sched/time/days-in-month ts/mon ts/year)))
+
+    ;; DEBUG
+    (format #t "    matcher: ts/*day: ~a, ts/mon: ~a, ts/year: ~a\n"
+            ts/*day ts/mon ts/year)
+
+    (and
+      ;; we have less days in the month than what's needed: force
+      ;; false short-ciruit
+      (boolean-unless *day/*
+        (<= ts/*day ts/mon/days))
+      (if-eq-or-under file/year ts/year
+        (if-eq-or-under file/mon ts/mon
+          (< file/day
+             (if *day/* ts/mon/days ts/*day))))
+      (if-eq-or-over now/year ts/year
+        (if-eq-or-over now/mon ts/mon
+          (if *day/*
+              (boolean-when-or-t
+                (and (= file/year ts/year)
+                     (= file/mon ts/mon))
+                (> now/day file/day))
+              (>= now/day ts/*day)))))
+    ))
+
+(sched/ts/day/with-matcher "*day")
+
+;; Runs a day-range-match with definite @ts/mon and @ts/year
+(define (sched/ts/*day/range* low high step ts/mon ts/year)
+  ;; TODO: this functionality could be side-loaded to
+  ;;   `sched/ts/day/with-target'
+
+  (let ((low/* (eq? low '*))
+        (high/* (eq? high '*))
+
+        (same-file (and (= file/year ts/year)
+                        (= file/mon ts/mon)))
+        (same-now (and (= now/year ts/year)
+                       (= now/mon ts/mon)))
+        (days-in-month (sched/time/days-in-month ts/mon ts/year)))
+
+    ;; DEBUG
+    (format #t
+            "    ranger: *day: low: ~a, high: ~a, step: ~a, ts/mon: ~a,\
+ ts/year: ~a\n"
+            low high step ts/mon ts/year)
+
+    (cond
+      ;; step doesn't apply to these conditions:
+      ((and low/* high/*)
+        (sched/ts/*day/range* 1 days-in-month 1 ts/mon ts/year)
+       )
+      (low/* ; the same as lower-bounding to `1'
+        (sched/ts/*day/range* 1 high 1 ts/mon ts/year))
+      ;; ---
+
+      (high/* ; the same as upper-bounding to `days-in-month'
+        (sched/ts/*day/range* low days-in-month step ts/mon ts/year))
+
+      (else
+        (let* ((high (smaller? high days-in-month))
+               (match
+                 (boolean-unless-or-f
+                   (or (> low days-in-month)
+                       (and same-now (< now/day low))
+                       (and same-file (>= file/day high)))
+                   (sched/ts/range-from low high step
+                     (if same-file file/day 1)
+                     (if same-now now/day days-in-month)))))
+          (boolean-when match
+            ;; either have it not be `same-file', or have the @match have
+            ;; something other than @file/day
+            (boolean-when-or-t same-file
+              (or (list? match) (not (= match file/day)))))
+          ))
+    )))
+
+(sched/ts/day/with-ranger "*day")
+
+;; WDAY FUNCTIONS
+
+;; Normalize @ts/wday from verbose to 1-7 notation
+(define (sched/ts/wday/norm ts/wday)
+  (if (or (number? ts/wday) (eq? ts/wday '*)) ts/wday
+      (sched/week->day ts/wday)))
+
+;; Returns the `target-days' given a range with @low, @high, @step and the
+;; current (normalized) @wday
+(define (sched/ts/wday/target-from low high step wday)
+  (cond
+    ((< wday low)
+      (- low wday))
+    ((>= wday high)
+      (+ (- 7 wday) low))
+
+    ;; [low, high)
+    ;; NOTE: `in-range' suffix here means 'rounding up', instead
+    (else
+      (let* ((wday*-step (modulo (- wday low) step))
+             (wday*-in-range (- wday wday*-step))
+             (next (sched/ts/next wday*-in-range high step)))
+         (if next
+             (- next wday)
+             ;; otherwise, treat it as if it were above-equal @high
+             (+ (- 7 wday) low))))
+    ))
+
+;; Runs a wday-match with definite @ts/mon and @ts/year
+(define (sched/ts/wday/match* ts/wday ts/mon ts/year)
+  (let* ((ts/wday (sched/ts/wday/norm ts/wday))
+         (ts/mon/days (sched/time/days-in-month ts/mon ts/year))
+
+         (same-file (and (= file/year ts/year)
+                         (= file/mon ts/mon)))
+         (same-now (and (= now/year ts/year)
+                        (= now/mon ts/mon)))
+
+         (ts/mon/wday (sched/time/wday-from-ts
+                        (if same-file file/day 1)
+                        ts/mon ts/year))
+
+         (target-days
+           (if (< ts/mon/wday ts/wday)
+               (- ts/wday ts/mon/wday)
+               ;; (>= ts/mon/wday ts/wday)
+               (- 7 (- ts/mon/wday ts/wday))
+               )))
+
+    ;; DEBUG
+    (format #t "    matcher: ts/wday: ~a, ts/mon: ~a, ts/year: ~a\n"
+            ts/wday ts/mon ts/year)
+
+    (sched/ts/day/with-target target-days ts/mon/days same-file same-now)
+    ))
+
+(sched/ts/day/with-matcher "wday")
+
+;; Runs a wday-range-match with definite @ts/mon and @ts/year
+(define (sched/ts/wday/range* low high step ts/mon ts/year)
+  (let* ((low (sched/ts/wday/norm low))
+         (high (sched/ts/wday/norm high))
+
+         (low/* (eq? low '*))
+         (high/* (eq? high '*))
+
+         (same-file (and (= file/year ts/year)
+                         (= file/mon ts/mon)))
+         (same-now (and (= now/year ts/year)
+                        (= now/mon ts/mon)))
+
+         (ts/mon/days (sched/time/days-in-month ts/mon ts/year))
+         (ts/mon/wday (sched/time/wday-from-ts
+                        (if same-file file/day 1)
+                        ts/mon ts/year)))
+
+    ;; DEBUG
+    (format #t
+            "    ranger: wday: low: ~a, high: ~a, step: ~a, ts/mon: ~a,\
+ ts/year: ~a\n"
+            low high step ts/mon ts/year)
+
+    (cond
+      ;; step doesn't apply to this condition:
+      (low/* ; the same as lower-bounding to `sun'
+        (sched/ts/wday/range* 'sun high 1 ts/mon ts/year))
+      ;; ---
+
+      (high/* ; the same as upper-bounding to `sat'
+        (sched/ts/wday/range* low 'sat step ts/mon ts/year))
+
+      (else
+        (let ((target-days
+                (sched/ts/wday/target-from low high step
+                  ts/mon/wday)))
+          (sched/ts/day/with-target target-days ts/mon/days
+            same-file same-now)
+          )))
+    ))
+
+(sched/ts/day/with-ranger "wday")
+
+;; NOTE: the functions below are generic polymorphisms for numeric and week
+;; days. /match and /range operations can be done of both
+;; NOTE: `*' (or `(* *)') only triggers the `*day' family of functions, as the
+;; functionality of it and `wday' is the same (avoids repetition)
+
+(define (sched/ts/day/match ts/day ts/mon--year*)
+  (if (or (eq? ts/day '*)
+          (number? ts/day))
+      (sched/ts/*day/match ts/day ts/mon--year*)
+      (sched/ts/wday/match ts/day ts/mon--year*)))
+
+;; NOTE: `wday' expects the @low-high--step? to be normalized. This is done
+;; inside its base ranger, as defined by `with-ranger' and `wday/range*'
+(define (sched/ts/day/range low-high--step? ts/mon--year*)
+  (let ((low (car low-high--step?))
+        (high (cadr low-high--step?)))
+    (if (or (number? low) (number? high)
+            (and (eq? low '*) (eq? high '*)))
+      (sched/ts/*day/range low-high--step? ts/mon--year*)
+      (sched/ts/wday/range low-high--step? ts/mon--year*))
+    ))
+
+;;; TIME-SCOPE FUNCTIONS
+
+;; Perform the appropriate action for the iterand @ts/iterand given @ts/match
+;; and @ts/range* functions, and the context as the 'rest'. It can also be
+;; called on an invalid ts-chain through the Car of @ts/context* being false,
+;; in which case it continues the false chain. NOTE: the context @ts/context* is
+;; *always* Car'd in this function first, before passing it to @ts/match* or
+;; @ts/range*
+;; Boolean optional returning Cons:
+;;   Car: Return status
+;;   Cdr: Remaining or-field
+(define (sched/ts/with-iterand ts/iterand ts/match* ts/range* . ts/context*)
+  ;; DEBUG
+  (format #t "  with: ts/iterand: ~a, ts/context*: ~a\n"
+          ts/iterand ts/context*)
+
+  (let ((ret (cons #f (list)))
+        (ts/context* (if (null? ts/context*) ts/context*
+                         (car ts/context*))))
+    (when (or (null? ts/context*) ;; @ts/iterand as `ts/year', for instance
+              ts/context*)
+      (set-car! ret
+        (if (list? ts/iterand)
+            ;; (op ts ...)
+            (let ((op (car ts/iterand))
+                  (ts (cdr ts/iterand)))
+              (if (eq? op '-)
+                  ;; (op ts) <-> (- ...)
+                  (ts/range* ts ts/context*)
+
+                  ;; otherwise it's an or-field
+                  (let ((ts/yield op))
+                    (set-cdr! ret ts)
+                    (if (list? ts/yield)
+                        ;; this can only be `-':
+                        ;;  ((- <cdr>) ...)
+                        ;;   ^ @ts/yield
+                        (ts/range* (cdr ts/yield) ts/context*)
+                        (ts/match* ts/yield ts/context*)))))
+
+            ;; --- standard iteration
+            (ts/match* ts/iterand ts/context*))))
+    ret))
+
+;; Returns the appropiate value for `step' on a function that receives a range
+;; either as `ts' or `context'.
+;; NOTE: functions that take values returned from this function should handle
+;;   the case of (= step 1)
+(define (sched/ts/step-from range)
+  (if (= 3 (length range))
+      (caddr range) 1))
+
+;; Generic `iteration-stop' macro, where the `stop' condition is a boolean
+;; passed as the first argument of named-let @iter
+;;   Literals:
+;;     - as-ts: use three more false values
+(define-syntax iter-stop
+  (syntax-rules (as-ts)
+    ((iter-stop as-ts iter)
+      (iter #f #f #f #f)
+     )))
+
+;; Boolean of @ts instance
+(define (sched/ts/instance? ts)
+  (let* ((ts/day (car ts))
+         (ts/mon (cadr ts))
+         (ts/year (if (= 3 (length ts)) (caddr ts) '*))
+
+         (ts/day/list? (and (list? ts/day)
+                            (not (eq? (car ts/day) '-))))
+         (ts/mon/list? (and (list? ts/mon)
+                            (not (eq? (car ts/mon) '-))))
+         (ts/year/list? (and (list? ts/year)
+                             (not (eq? (car ts/year) '-)))))
+    ;; Iterators: each one of them iterates one of the time scopes: `year',
+    ;; `mon' or `day' with defaults of the others using `sched/ts/with-iterand'
+    (letrec-syntax
+      ((sched/ts/iter/year
+         (syntax-rules ()
+           ((sched/ts/iter/year iter* ts/year*)
+             (if (null? (cdr ts/year*))
+                 (iter-stop as-ts iter*)
+                 (let*
+                   ((ts/year/match:year
+                      (sched/ts/with-iterand
+                        (cdr ts/year*) sched/ts/year/match sched/ts/year/range))
+                    (ts/mon/match:year
+                      (sched/ts/with-iterand
+                        ts/mon sched/ts/mon/match sched/ts/mon/range
+                        (car ts/year/match:year)))
+                    (ts/day/match:year
+                      (sched/ts/with-iterand
+                        ts/day sched/ts/day/match sched/ts/day/range
+                        (car ts/mon/match:year))))
+                   (iter* #t
+                     ts/year/match:year ts/mon/match:year ts/day/match:year))))
+           ))
+       (sched/ts/iter/mon
+         (syntax-rules ()
+           ((sched/ts/iter/mon iter* ts/year* ts/mon*)
+              (if (null? (cdr ts/mon*))
+                  (if ts/year/list?
+                      (sched/ts/iter/year iter* ts/year*)
+                      (iter-stop as-ts iter*))
+                  (let*
+                      ((ts/mon/match:mon
+                         (sched/ts/with-iterand
+                           (cdr ts/mon*) sched/ts/mon/match sched/ts/mon/range
+                           (car ts/year*)))
+                       (ts/day/match:mon
+                         (sched/ts/with-iterand
+                           ts/day sched/ts/day/match sched/ts/day/range
+                           (car ts/mon/match:mon))))
+                    (iter* #t
+                      ts/year* ts/mon/match:mon ts/day/match:mon))))
+           ))
+       (sched/ts/iter/day
+         (syntax-rules ()
+           ((sched/ts/iter/day iter* ts/year* ts/mon* ts/day*)
+              (if (null? (cdr ts/day*))
+                  (if ts/mon/list?
+                      (sched/ts/iter/mon iter* ts/year* ts/mon*)
+                      (if ts/year/list?
+                          (sched/ts/iter/year iter* ts/year*)
+                          (iter-stop as-ts iter*)))
+                  (let*
+                      ((ts/day/match:day
+                         (sched/ts/with-iterand
+                           (cdr ts/day*) sched/ts/day/match sched/ts/day/range
+                           (car ts/mon*))))
+                    (iter* #t
+                      ts/year* ts/mon* ts/day/match:day))))
+           )))
+
+      (let iter-ts
+        ((continue? #t)
+         (ts/year/match #f)
+         (ts/mon/match #f)
+         (ts/day/match #f))
+
+        ;; DEBUG
+        (format #t "iter-ts: (~a ~a ~a)\n"
+                ts/day/match ts/mon/match ts/year/match)
+
+        (boolean-when continue?
+          (cond
+            ;; starting condition (will never be a false positive, because of
+            ;; `sched/ts/with-iterand')
+            ((eq? ts/year/match #f)
+              (let*
+                ((ts/year/match:start
+                   (sched/ts/with-iterand
+                     ts/year sched/ts/year/match sched/ts/year/range))
+                 (ts/mon/match:start
+                   (sched/ts/with-iterand
+                     ts/mon sched/ts/mon/match sched/ts/mon/range
+                     (car ts/year/match:start)))
+                 (ts/day/match:start
+                   (sched/ts/with-iterand
+                     ts/day sched/ts/day/match sched/ts/day/range
+                     (car ts/mon/match:start))))
+                (iter-ts #t
+                  ts/year/match:start ts/mon/match:start ts/day/match:start)))
+
+            ;; iterate the corresponding field:
+            ((not (car ts/year/match))
+              (if ts/year/list?
+                  (sched/ts/iter/year iter-ts ts/year/match)
+                  (iter-stop as-ts iter-ts)))
+
+            ((not (car ts/mon/match))
+              (if ts/mon/list?
+                  (sched/ts/iter/mon iter-ts ts/year/match ts/mon/match)
+                  (if ts/year/list?
+                      (sched/ts/iter/year iter-ts ts/year/match)
+                      (iter-stop as-ts iter-ts))))
+
+            ((not (car ts/day/match))
+              (if ts/day/list?
+                  (sched/ts/iter/day iter-ts
+                    ts/year/match ts/mon/match ts/day/match)
+                  (if ts/mon/list?
+                      (sched/ts/iter/mon iter-ts
+                        ts/year/match ts/mon/match)
+                      (if ts/year/list?
+                          (sched/ts/iter/year iter-ts ts/year/match)
+                          (iter-stop as-ts iter-ts)))))
+            ;; ---
+
+            ;; all match: that's it
+            (else #t)
+          )))
+        )))
+
+(define (sched/jobfile/main)
+  ;; DEBUG
+  (format #t "For time:\n  file: ~a\n  now: ~a\n"
+          (list file/day file/mon file/year)
+          (list now/day now/mon now/year))
+
+  (for-each
+    (lambda (job)
+      (let* ((job-len (length job))
+             (time-scope (car job))
+             (job-scope (cadr job)))
+        ;; DEBUG
+        (format #t "\n---\nFor ts: ~a\n" time-scope)
+
+        (when (sched/ts/instance? time-scope)
+          (for-each
+            (lambda (job)
+              (let ((job-name (car job))
+                    (job-desc (cdr job)))
+                (if (null? (cdr job-desc))
+                    (format #t "JOB: ~a ~a\n"
+                      job-name (car job-desc))
+                    (format #t "DO: ~a\nJOB: ~a ~a\n"
+                      (cdr job-desc) job-name (car job-desc)))))
+            job-scope))
+        ))
+    sched:jobs))
+
+;;;; GLOBALS
+
+(define-syntax job
+  (syntax-rules ()
+    ((job time-scope jobs)
+      (sched/job/insert `time-scope `jobs)
+     )))
+
+;;;; LOCALS
+
+(define (sched/main/help _)
+  (display "\
+Usage:       schedl [option] JOBFILE
+Description: A static scheduler
+Info:
+  --help, -h: displays this message
+  --version, -v: displays the current version
+Options (one per invocation):
+  --dry, -k: don't update the job file
+Note:
+  Read `(schedl)Top' by running `info schedl'\n")
+  (set! prog/halt #t))
+
+(define (sched/main/version _)
+  (format #t "~a ~a, ~a ~a\n"
+          prog/name prog/version prog/dev prog/year)
+  (set! prog/halt #t))
+
+(define (sched/main/dry _)
+  (set! sched:dry? #t))
+
+(define (sched/main/file file)
+  (primitive-load file)
+
+  (set! sched:jobfile-now (localtime (stat:mtime (stat file))))
+  (set! file/day  (tm:mday sched:jobfile-now))
+  (set! file/mon  (+ 1 (tm:mon sched:jobfile-now)))
+  (set! file/year (+ 1900 (tm:year sched:jobfile-now)))
+  (set! file/wday (+ 1 (tm:wday sched:jobfile-now)))
+
+  (sched/jobfile/main)
+  (unless sched:dry? (utime file))
+  (exit))
+
+(define prog/name    "schedl")
+(define prog/version "v0.4.1")
+(define prog/dev     "mH")
+(define prog/year    "2023")
+(define prog/halt    #f)
+
+;;;; COMMAND LINE
+
+(define sched/options '(("--help"    #:function sched/main/help)
+                        ("--version" #:function sched/main/version)
+                        ("--dry"     #:function sched/main/dry)
+
+                        ("-k" #:same-as "--dry")
+                        ("-h" #:same-as "--help")
+                        ("-v" #:same-as "--version")))
+
+(define (sched/options/get attr list)
+  (let ((function (sched/get attr list))
+        (same-as #f))
+    (if (symbol? function) function
+      (begin
+        (set! same-as (cdr (assoc (sched/get #:same-as list) sched/options)))
+        (sched/get attr same-as)))))
+
+;;;; MAIN
+
+(define (sched/main args)
+  (let ((args (cdr args)))
+    (let iter ((args args))
+      (when (null? args) (sched/error 'EMISSINGJOB))
+      (let* ((matched-option (assoc (car args) sched/options))
+             (matched-value (boolean-when matched-option
+                              (cdr matched-option))))
+        (unless (null? args)
+          (if matched-value
+              (begin
+                ((primitive-eval (sched/options/get #:function matched-value))
+                  (cdr args))
+                (when prog/halt (exit))
+                (iter (cdr args)))
+              (sched/main/file (car args))))
+        ))
+    (sched/error 'EMISSINGJOB)
+    ))
