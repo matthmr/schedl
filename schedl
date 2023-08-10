@@ -825,11 +825,6 @@
 (define (sched/ts/*day/match* ts/*day ts/mon ts/year)
   (let ((*day/* (eq? ts/*day '*))
         (ts/mon/days (sched/time/days-in-month ts/mon ts/year)))
-
-    ;; DEBUG
-    (format #t "    matcher: ts/*day: ~a, ts/mon: ~a, ts/year: ~a\n"
-            ts/*day ts/mon ts/year)
-
     (and
       ;; we have less days in the month than what's needed: force
       ;; false short-ciruit
@@ -864,13 +859,6 @@
         (same-now (and (= now/year ts/year)
                        (= now/mon ts/mon)))
         (days-in-month (sched/time/days-in-month ts/mon ts/year)))
-
-    ;; DEBUG
-    (format #t
-            "    ranger: *day: low: ~a, high: ~a, step: ~a, ts/mon: ~a,\
- ts/year: ~a\n"
-            low high step ts/mon ts/year)
-
     (cond
       ;; step doesn't apply to these conditions:
       ((and low/* high/*)
@@ -951,11 +939,6 @@
                ;; (>= ts/mon/wday ts/wday)
                (- 7 (- ts/mon/wday ts/wday))
                )))
-
-    ;; DEBUG
-    (format #t "    matcher: ts/wday: ~a, ts/mon: ~a, ts/year: ~a\n"
-            ts/wday ts/mon ts/year)
-
     (sched/ts/day/with-target target-days ts/mon/days same-file same-now)
     ))
 
@@ -978,13 +961,6 @@
          (ts/mon/wday (sched/time/wday-from-ts
                         (if same-file file/day 1)
                         ts/mon ts/year)))
-
-    ;; DEBUG
-    (format #t
-            "    ranger: wday: low: ~a, high: ~a, step: ~a, ts/mon: ~a,\
- ts/year: ~a\n"
-            low high step ts/mon ts/year)
-
     (cond
       ;; step doesn't apply to this condition:
       (low/* ; the same as lower-bounding to `sun'
@@ -1039,10 +1015,6 @@
 ;;   Car: Return status
 ;;   Cdr: Remaining or-field
 (define (sched/ts/with-iterand ts/iterand ts/match* ts/range* . ts/context*)
-  ;; DEBUG
-  (format #t "  with: ts/iterand: ~a, ts/context*: ~a\n"
-          ts/iterand ts/context*)
-
   (let ((ret (cons #f (list)))
         (ts/context* (if (null? ts/context*) ts/context*
                          (car ts/context*))))
@@ -1166,11 +1138,6 @@
          (ts/year/match #f)
          (ts/mon/match #f)
          (ts/day/match #f))
-
-        ;; DEBUG
-        (format #t "iter-ts: (~a ~a ~a)\n"
-                ts/day/match ts/mon/match ts/year/match)
-
         (boolean-when continue?
           (cond
             ;; starting condition (will never be a false positive, because of
@@ -1222,19 +1189,11 @@
         )))
 
 (define (sched/jobfile/main)
-  ;; DEBUG
-  (format #t "For time:\n  file: ~a\n  now: ~a\n"
-          (list file/day file/mon file/year)
-          (list now/day now/mon now/year))
-
   (for-each
     (lambda (job)
       (let* ((job-len (length job))
              (time-scope (car job))
              (job-scope (cadr job)))
-        ;; DEBUG
-        (format #t "\n---\nFor ts: ~a\n" time-scope)
-
         (when (sched/ts/instance? time-scope)
           (for-each
             (lambda (job)
