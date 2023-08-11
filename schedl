@@ -465,19 +465,21 @@
 
 ;; Matches a month range with a definite year
 (define (sched/ts/mon/range:definite-year low high step ts/year)
-  (let ((now/year:over-low?
+  (let ((over-low-or-year
           (or (and (= now/year ts/year)
                    (>= now/mon low))
-              (> now/year ts/year))) ; over-low in either month in the
-                                     ; same year, or another year
+              (> now/year ts/year)))
         )
     (boolean-when
       (or (and (= file/year ts/year)
                (or (and (<= file/mon high)
-                        (or (>= file/mon low) now/year:over-low?))
-                   (and (> file/mon high) now/year:over-low?)))
-          (and (< file/year ts/year)
-               now/year:over-low?))
+                        (or (>= file/mon low) over-low-or-year))
+                   (and (> file/mon high)
+                        (or (> (- now/year ts/year) 1)
+                            (and (> now/year ts/year)
+                                 (>= now/mon low)))
+                        )))
+          (and (< file/year ts/year) over-low-or-year))
       (let ((ts/mon/range:am
               (sched/ts/range-from low high step
                 (if (= file/year ts/year) file/mon low)
