@@ -611,6 +611,7 @@
   (if same-file
       (>= (- (if same-now now/day ts/mon/days) file/day)
           target-days)
+      ;; how many days after 1?
       (or (not same-now) (>= (- now/day 1) target-days))))
 
 ;; Functor for generic `day' match
@@ -902,7 +903,7 @@
 
 ;; Returns the `target-days' given a range with @low, @high, @step and the
 ;; current (normalized) @wday
-(define (sched/ts/wday/target-from low high step wday)
+(define (sched/ts/wday/target-from low high step wday same-file)
   (cond
     ((< wday low)
       (- low wday))
@@ -910,11 +911,14 @@
       (+ (- 7 wday) low))
 
     ;; [low, high)
-    ;; NOTE: `in-range' suffix here means 'rounding up', instead
     (else
       (let* ((wday*-step (modulo (- wday low) step))
              (wday*-in-range (- wday wday*-step))
-             (next (sched/ts/next wday*-in-range high step)))
+
+             ;; we only need to issue `next' if we're `same-file'
+             (next (if (or same-file (not (= wday*-in-range wday)))
+                       (sched/ts/next wday*-in-range high step)
+                       wday*-in-range)))
          (if next
              (- next wday)
              ;; otherwise, treat it as if it were above-equal @high
@@ -936,7 +940,9 @@
                         ts/mon ts/year))
 
          (target-days
-           (if (< ts/mon/wday ts/wday)
+           (if (if same-file
+                   (< ts/mon/wday ts/wday)
+                   (<= ts/mon/wday ts/wday))
                (- ts/wday ts/mon/wday)
                ;; (>= ts/mon/wday ts/wday)
                (- 7 (- ts/mon/wday ts/wday))
@@ -975,7 +981,7 @@
       (else
         (let ((target-days
                 (sched/ts/wday/target-from low high step
-                  ts/mon/wday)))
+                  ts/mon/wday same-file)))
           (sched/ts/day/with-target target-days ts/mon/days
             same-file same-now)
           )))
