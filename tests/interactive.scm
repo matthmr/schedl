@@ -85,13 +85,18 @@
   (inc units-failed)
   (inc units-done))
 
-(define (unit-log-end)
+(define (unit-log-end--no-exit)
   (let ((passed (- units-done units-failed))
         (done units-done)
         (failed units-failed))
     (set! units-done 0)
     (set! units-failed 0)
     (format #t unit-log-end-fmt passed done)
+    failed
+    ))
+
+(define (unit-log-end)
+  (let ((failed (unit-log-end--no-exit)))
     (exit (if (= failed 0) 0 1))
     ))
 

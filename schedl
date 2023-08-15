@@ -605,6 +605,8 @@
 ;; day functions should only trigger if the match was more than only on file/*,
 ;; i.e., upper-bounded by now/*, and over file/*
 
+;; MATCHERS
+
 ;; Runs a generic day*-match with a given target day @target-days, and the
 ;; amount of days in the matching month @ts/mon/days
 (define (sched/ts/day/with-target target-days ts/mon/days same-file same-now)
@@ -614,218 +616,167 @@
       ;; how many days after 1?
       (or (not same-now) (>= (- now/day 1) target-days))))
 
-;; Functor for generic `day' match
-(define-syntax sched/ts/day/with-matcher
-  (syntax-rules ()
-    ((sched/ts/day/with-matcher matcher-type)
-      (let ((matcher
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,matcher-type "/match"))))
-            (iter*:mon
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,matcher-type "/match/iter:mon"))))
-            (iter*:year
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,matcher-type "/match/iter:year"))))
-            (match*
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,matcher-type "/match*")))))
-
-        ;; matcher
-        (primitive-eval
-          `(define (,matcher ts/day* ts/mon--year*)
-             (let* ((ts/mon (car ts/mon--year*))
-                    (ts/mon/list? (list? ts/mon))
-
-                    (ts/year (cdr ts/mon--year*))
-                    (ts/year/list? (list? ts/year)))
-               (cond
-                 (ts/year/list?
-                   (,iter*:year ts/day* ts/mon ts/year ts/mon/list?))
-                 (ts/mon/list?
-                   (,iter*:mon ts/day* ts/mon ts/year))
-                 (else
-                   (,match* ts/day* ts/mon ts/year)))
-             )))
-
-        ;; iter*:mon
-        (primitive-eval
-          `(define (,iter*:mon ts/day* ts/mon ts/year)
-             (let ((ts/mon/low (car ts/mon))
-                   (ts/mon/high (cadr ts/mon))
-                   (ts/mon/step (sched/ts/step-from ts/mon)))
-               (let iter ((ts/mon* ts/mon/low))
-                 (boolean-when ts/mon*
-                   (boolean-unless (,match* ts/day* ts/mon* ts/year)
-                     (iter (sched/ts/next ts/mon* ts/mon/high ts/mon/step)))))
-               )))
-
-        ;; iter*:year
-        (primitive-eval
-          `(define (,iter*:year ts/day* ts/mon ts/year ts/mon/list?)
-             (let* ((ts/year/low (car ts/year))
-                    (ts/year/high (cadr ts/year))
-                    (ts/year/step (sched/ts/step-from ts/year))
-
-                    (ts/mon:for-low
-                      (if ts/mon/list?
-                          (car ts/mon) ts/mon))
-                    (ts/mon:for-high
-                      (if ts/mon/list?
-                          (cadr ts/mon) ts/mon))
-                    (ts/mon:for-high/list? (list? ts/mon:for-high))
-                    (ts/mon:for-low/list? (list? ts/mon:for-low))
-
-                    (ts/mon:full-range
-                      (if ts/mon/list?
-                          (caddr ts/mon) ts/mon))
-                    (ts/mon:full-range/list? (list? ts/mon:full-range)))
-
-               (let iter ((ts/year* ts/year/low))
-                 (boolean-when ts/year*
-                   (boolean-unless
-                     (cond
-                       ((= ts/year* ts/year/low)
-                         (if ts/mon:for-low/list?
-                             (,iter*:mon ts/day*
-                               ts/mon:for-low ts/year*)
-                             (,match* ts/day*
-                               ts/mon:for-low ts/year*)))
-                       ((= ts/year* ts/year/high)
-                         (if ts/mon:for-high/list?
-                             (,iter*:mon ts/day*
-                               ts/mon:for-high ts/year*)
-                             (,match* ts/day*
-                               ts/mon:for-high ts/year*)))
-                       (else
-                          (if ts/mon:full-range/list?
-                            (,iter*:mon ts/day*
-                              ts/mon:full-range ts/year*)
-                            (,match* ts/day*
-                              ts/mon:full-range ts/year*))
-                         ))
-                     (iter (sched/ts/next ts/year* ts/year/high ts/year/step)))
-                   ))
-                 )))
-        #t))
-     ))
-
-;; Functor for generic `day' range
-(define-syntax sched/ts/day/with-ranger
-  (syntax-rules ()
-    ((sched/ts/day/with-ranger ranger-type)
-      (let ((ranger
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,ranger-type "/range"))))
-            (iter*:mon
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,ranger-type "/range/iter:mon"))))
-            (iter*:year
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,ranger-type "/range/iter:year"))))
-            (range*
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,ranger-type "/range*"))))
-
-            (matcher/iter*:mon
-              (string->symbol
-                (string-concatenate
-                  `("sched/ts/" ,ranger-type "/match/iter:mon")))))
-
-        ;; ranger
-        (primitive-eval
-          `(define (,ranger low-high--step? ts/mon--year*)
-             (let* ((low (car low-high--step?))
-                    (high (cadr low-high--step?))
-                    (step (sched/ts/step-from low-high--step?))
-
-                    (ts/mon (car ts/mon--year*))
-                    (ts/mon/list? (list? ts/mon))
-
-                    (ts/year (cdr ts/mon--year*))
-                    (ts/year/list? (list? ts/year)))
-               (cond
-                 (ts/year/list?
-                   (,iter*:year low high step ts/mon ts/year ts/mon/list?))
-                 (ts/mon/list?
-                   (,iter*:mon low high step ts/mon ts/year))
-                 (else
-                   (,range* low high step ts/mon ts/year)))
-               )))
-
-        ;; iter*:mon
-        (primitive-eval
-          `(define (,iter*:mon low high step ts/mon ts/year)
-             (let ((ts/mon/low (car ts/mon))
-                   (ts/mon/high (cadr ts/mon))
-                   (ts/mon/step (sched/ts/step-from ts/mon)))
-               (let iter ((ts/mon* ts/mon/low))
-                 (boolean-when ts/mon*
-                   (boolean-unless
-                     (,range* low high step ts/mon* ts/year)
-                     (iter (sched/ts/next ts/mon* ts/mon/high ts/mon/step)))
-                   ))
-               )))
-
-        ;; iter*:year
-        (primitive-eval
-          `(define (,iter*:year low high step ts/mon ts/year ts/mon/list?)
-             (let* ((ts/year/low (car ts/year))
-                    (ts/year/high (cadr ts/year))
-                    (ts/year/step (sched/ts/step-from ts/year))
-
-                    (ts/mon:for-low
-                      (if ts/mon/list?
-                          (car ts/mon) ts/mon))
-                    (ts/mon:for-high
-                      (if ts/mon/list?
-                          (cadr ts/mon) ts/mon))
-                    (ts/mon:for-high/list? (list? ts/mon:for-high))
-                    (ts/mon:for-low/list? (list? ts/mon:for-low))
-
-                    (ts/mon:full-range
-                      (if ts/mon/list?
-                          (caddr ts/mon) ts/mon))
-                    (ts/mon:full-range/list? (list? ts/mon:full-range)))
-               (let iter ((ts/year* ts/year/low))
-                 (boolean-when ts/year*
-                   (boolean-unless
-                     (cond
-                       ((= ts/year* ts/year/low)
-                         (if ts/mon:for-low/list?
-                             (,iter*:mon low high step
-                               ts/mon:for-low ts/year)
-                             (,range* low high step
-                               ts/mon:for-low ts/year)))
-                       ((= ts/year* ts/year/high
-                         (if ts/mon:for-high/list?
-                             (,iter*:mon low high step
-                               ts/mon:for-high ts/year)
-                             (,range* low high step
-                               ts/mon:for-high ts/year))))
-                       (else
-                         (if ts/mon:full-range/list?
-                           (,iter*:mon low high step
-                             ts/mon:full-range ts/year)
-                           (,range* low high step
-                             ts/mon:full-range ts/year))))
-                     (iter (sched/ts/next ts/year* ts/year/high ts/year/step)))
-                   ))
-               )))
-        #t))
+;; Generic `mon' iterator, for matcher. Receives a matcher `match*'
+(define (sched/ts/*day/match:iter-mon match* ts/day* ts/mon ts/year)
+  (let ((ts/mon/low (car ts/mon))
+        (ts/mon/high (cadr ts/mon))
+        (ts/mon/step (sched/ts/step-from ts/mon)))
+    (let iter ((ts/mon* ts/mon/low))
+      (boolean-when ts/mon*
+        (boolean-unless (match* ts/day* ts/mon* ts/year)
+          (iter (sched/ts/next ts/mon* ts/mon/high ts/mon/step)))))
     ))
 
-;; (*)DAY FUNCTIONS
+;; Generic `year' iterator, for matcher. Receives a matcher `match*'
+(define (sched/ts/*day/match:iter-year
+          match* ts/day* ts/mon ts/year ts/mon/list?)
+  (let* ((ts/year/low (car ts/year))
+         (ts/year/high (cadr ts/year))
+         (ts/year/step (sched/ts/step-from ts/year))
 
-(define (sched/ts/*day/match* ts/*day ts/mon ts/year)
+         (ts/mon:for-low
+           (if ts/mon/list?
+               (car ts/mon) ts/mon))
+         (ts/mon:for-high
+           (if ts/mon/list?
+               (cadr ts/mon) ts/mon))
+         (ts/mon:for-high/list? (list? ts/mon:for-high))
+         (ts/mon:for-low/list? (list? ts/mon:for-low))
+
+         (ts/mon:full-range
+           (if ts/mon/list?
+               (caddr ts/mon) ts/mon))
+         (ts/mon:full-range/list? (list? ts/mon:full-range)))
+
+    (let iter ((ts/year* ts/year/low))
+      (boolean-when ts/year*
+        (boolean-unless
+          (cond
+            ((= ts/year* ts/year/low)
+              (if ts/mon:for-low/list?
+                  (sched/ts/*day/match:iter-mon match* ts/day*
+                    ts/mon:for-low ts/year*)
+                  (match* ts/day*
+                    ts/mon:for-low ts/year*)))
+            ((= ts/year* ts/year/high)
+              (if ts/mon:for-high/list?
+                  (sched/ts/*day/match:iter-mon match* ts/day*
+                    ts/mon:for-high ts/year*)
+                  (match* ts/day*
+                    ts/mon:for-high ts/year*)))
+            (else
+              (if ts/mon:full-range/list?
+                (sched/ts/*day/match:iter-mon match* ts/day*
+                  ts/mon:full-range ts/year*)
+                (match* ts/day*
+                  ts/mon:full-range ts/year*))
+              ))
+          (iter (sched/ts/next ts/year* ts/year/high ts/year/step)))
+        ))
+    ))
+
+;; Generic `day' match. Receives a matcher `match*'
+(define (sched/ts/*day/match match* ts/day* ts/mon--year*)
+  (let* ((ts/mon (car ts/mon--year*))
+         (ts/mon/list? (list? ts/mon))
+
+         (ts/year (cdr ts/mon--year*))
+         (ts/year/list? (list? ts/year)))
+    (cond
+      (ts/year/list?
+        (sched/ts/*day/match:iter-year match* ts/day*
+          ts/mon ts/year ts/mon/list?))
+      (ts/mon/list?
+        (sched/ts/*day/match:iter-mon match* ts/day*
+          ts/mon ts/year))
+      (else
+        (match* ts/day*
+          ts/mon ts/year)))
+  ))
+
+;; RANGERS
+
+;; Generic `mon' iterator, for ranger. Receives a ranger `range*'
+(define (sched/ts/*day/range:iter-mon range* low high step ts/mon ts/year)
+  (let ((ts/mon/low (car ts/mon))
+        (ts/mon/high (cadr ts/mon))
+        (ts/mon/step (sched/ts/step-from ts/mon)))
+    (let iter ((ts/mon* ts/mon/low))
+      (boolean-when ts/mon*
+        (boolean-unless
+          (range* low high step ts/mon* ts/year)
+          (iter (sched/ts/next ts/mon* ts/mon/high ts/mon/step)))
+        ))
+    ))
+
+;; Generic `year' iterator, for ranger. Receives a ranger `range*'
+(define (sched/ts/*day/range:iter-year
+          range* low high step ts/mon ts/year ts/mon/list?)
+  (let* ((ts/year/low (car ts/year))
+         (ts/year/high (cadr ts/year))
+         (ts/year/step (sched/ts/step-from ts/year))
+
+         (ts/mon:for-low
+           (if ts/mon/list?
+               (car ts/mon) ts/mon))
+         (ts/mon:for-high
+           (if ts/mon/list?
+               (cadr ts/mon) ts/mon))
+         (ts/mon:for-high/list? (list? ts/mon:for-high))
+         (ts/mon:for-low/list? (list? ts/mon:for-low))
+
+         (ts/mon:full-range
+           (if ts/mon/list?
+               (caddr ts/mon) ts/mon))
+         (ts/mon:full-range/list? (list? ts/mon:full-range)))
+    (let iter ((ts/year* ts/year/low))
+      (boolean-when ts/year*
+        (boolean-unless
+          (cond
+            ((= ts/year* ts/year/low)
+              (if ts/mon:for-low/list?
+                  (sched/ts/*day/range:iter-mon range* low high step
+                    ts/mon:for-low ts/year*)
+                  (range* low high step
+                    ts/mon:for-low ts/year*)))
+            ((= ts/year* ts/year/high)
+              (if ts/mon:for-high/list?
+                  (sched/ts/*day/range:iter-mon range* low high step
+                    ts/mon:for-high ts/year*)
+                  (range* low high step
+                    ts/mon:for-high ts/year*)))
+            (else
+              (if ts/mon:full-range/list?
+                (sched/ts/*day/range:iter-mon range* low high step
+                  ts/mon:full-range ts/year*)
+                (range* low high step
+                  ts/mon:full-range ts/year*))))
+          (iter (sched/ts/next ts/year* ts/year/high ts/year/step)))
+        ))
+    ))
+
+;; Generic `day' range. Receives a ranger `range*'
+(define (sched/ts/*day/range range* low high step ts/mon--year*)
+  (let* ((ts/mon (car ts/mon--year*))
+         (ts/mon/list? (list? ts/mon))
+
+         (ts/year (cdr ts/mon--year*))
+         (ts/year/list? (list? ts/year)))
+    (cond
+      (ts/year/list?
+        (sched/ts/*day/range:iter-year range* low high step
+          ts/mon ts/year ts/mon/list?))
+      (ts/mon/list?
+        (sched/ts/*day/range:iter-mon range* low high step
+          ts/mon ts/year))
+      (else
+        (range* low high step
+          ts/mon ts/year)))
+    ))
+
+;; NDAY FUNCTIONS
+
+(define (sched/ts/nday/match* ts/*day ts/mon ts/year)
   (let ((*day/* (eq? ts/*day '*))
         (ts/mon/days (sched/time/days-in-month ts/mon ts/year)))
     (and
@@ -847,10 +798,8 @@
               (>= now/day ts/*day)))))
     ))
 
-(sched/ts/day/with-matcher "*day")
-
 ;; Runs a day-range-match with definite @ts/mon and @ts/year
-(define (sched/ts/*day/range* low high step ts/mon ts/year)
+(define (sched/ts/nday/range* low high step ts/mon ts/year)
   ;; TODO: this functionality could be side-loaded to
   ;;   `sched/ts/day/with-target'
 
@@ -865,14 +814,14 @@
     (cond
       ;; step doesn't apply to these conditions:
       ((and low/* high/*)
-        (sched/ts/*day/range* 1 days-in-month 1 ts/mon ts/year)
+        (sched/ts/nday/range* 1 days-in-month 1 ts/mon ts/year)
        )
       (low/* ; the same as lower-bounding to `1'
-        (sched/ts/*day/range* 1 high 1 ts/mon ts/year))
+        (sched/ts/nday/range* 1 high 1 ts/mon ts/year))
       ;; ---
 
       (high/* ; the same as upper-bounding to `days-in-month'
-        (sched/ts/*day/range* low days-in-month step ts/mon ts/year))
+        (sched/ts/nday/range* low days-in-month step ts/mon ts/year))
 
       (else
         (let* ((high (smaller? high days-in-month))
@@ -891,8 +840,6 @@
               (or (list? match) (not (= match file/day)))))
           ))
     )))
-
-(sched/ts/day/with-ranger "*day")
 
 ;; WDAY FUNCTIONS
 
@@ -950,8 +897,6 @@
     (sched/ts/day/with-target target-days ts/mon/days same-file same-now)
     ))
 
-(sched/ts/day/with-matcher "wday")
-
 ;; Runs a wday-range-match with definite @ts/mon and @ts/year
 (define (sched/ts/wday/range* low high step ts/mon ts/year)
   (let* ((low (sched/ts/wday/norm low))
@@ -987,28 +932,27 @@
           )))
     ))
 
-(sched/ts/day/with-ranger "wday")
+;; POLYMORPHISMS
 
-;; NOTE: the functions below are generic polymorphisms for numeric and week
-;; days. /match and /range operations can be done of both
 ;; NOTE: `*' (or `(* *)') only triggers the `*day' family of functions, as the
 ;; functionality of it and `wday' is the same (avoids repetition)
 
 (define (sched/ts/day/match ts/day ts/mon--year*)
-  (if (or (eq? ts/day '*)
-          (number? ts/day))
-      (sched/ts/*day/match ts/day ts/mon--year*)
-      (sched/ts/wday/match ts/day ts/mon--year*)))
+  (sched/ts/*day/match
+    (if (or (eq? ts/day '*)
+            (number? ts/day))
+        sched/ts/nday/match* sched/ts/wday/match*)
+    ts/day ts/mon--year*))
 
-;; NOTE: `wday' expects the @low-high--step? to be normalized. This is done
-;; inside its base ranger, as defined by `with-ranger' and `wday/range*'
 (define (sched/ts/day/range low-high--step? ts/mon--year*)
   (let ((low (car low-high--step?))
-        (high (cadr low-high--step?)))
-    (if (or (number? low) (number? high)
-            (and (eq? low '*) (eq? high '*)))
-      (sched/ts/*day/range low-high--step? ts/mon--year*)
-      (sched/ts/wday/range low-high--step? ts/mon--year*))
+        (high (cadr low-high--step?))
+        (step (sched/ts/step-from low-high--step?)))
+    (sched/ts/*day/range
+      (if (or (number? low) (number? high)
+              (and (eq? low '*) (eq? high '*)))
+          sched/ts/nday/range* sched/ts/wday/range*)
+      low high step ts/mon--year*)
     ))
 
 ;;; TIME-SCOPE FUNCTIONS
@@ -1261,7 +1205,7 @@ Note:
   (exit))
 
 (define prog/name    "schedl")
-(define prog/version "v0.4.1")
+(define prog/version "v1.0.0")
 (define prog/dev     "mH")
 (define prog/year    "2023")
 (define prog/halt    #f)
