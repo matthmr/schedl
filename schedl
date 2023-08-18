@@ -298,11 +298,28 @@
 
     (if (= 0 low*-step)
         (sched/ts/bound-norm low* (bigger? low* high*-in-range) step)
+
+        ;; round up @low*-in-range to the next match
         (let ((low*:am (+ low*-in-range step)))
-          ;; FIXME: is the first expression in the `and' below needed?
-          (boolean-when (and (>= high* low*:am)
-                             (<= low*:am high*-in-range))
+          ;; this condition is enough because if it were bigger, that means
+          ;; there's no other match between low* and high* that respects @step
+          (boolean-when (<= low*:am high*-in-range)
             (sched/ts/bound-norm low*:am high*-in-range step))))
+    ))
+
+;; Boolean for in-range inclusion, with required step
+(define (sched/ts/in-range? low high step low* high*)
+  (let* ((high* (if (eq? high '*) high* (smaller? high* high)))
+         (low* (if (> low* low) low* low))
+
+         (low*-step (modulo (- low* low) step))
+         (low*-in-range (- low* low*-step))
+
+         (high*-step (modulo (- high* low*-in-range) step))
+         (high*-in-range (- high* high*-step)))
+
+    (or (= 0 low*-step)
+        (<= (+ low*-in-range step) high*-in-range))
     ))
 
 ;; Next instance given current bound-normalized state @cur, @high and @step.
@@ -389,8 +406,7 @@
 ;; Amortize a `ts/year' range based on a definite @ts/mon
 (define (sched/ts/mon/year:am-range
           ts/year/low ts/year/low:mon
-          ts/year/high ts/year/high:mon
-          ts/year/step
+          ts/year/high ts/year/high:mon ts/year/step
           ts/mon)
   (let* ((ts/year/low:am
            (+ ts/year/low
@@ -409,6 +425,23 @@
     (if (list? ts/year:am)
         (append ts/year:am (list ts/year/step))
         ts/year:am))))
+
+;; Amortize a `ts/year' range based on a `ts/mon' range
+(define (sched/ts/mon/year:am-range-from-range
+          ts/year/low ts/year/low:mon
+          ts/year/high ts/year/high:mon ts/year/step
+          ts/mon/low ts/mon/high ts/mon/step)
+  (let* ((ts/year/low:am
+           (+ ts/year/low
+              (if (> ts/year/low:mon ts/mon/high)
+                  ts/year/step 0)))
+         (ts/year/high:am
+           (- ts/year/high
+              (if (< ts/year/high:mon ts/mon/low)
+                  ts/year/step 0))))
+    (boolean-when (<= ts/year/low:am ts/year/high:am)
+      (sched/ts/bound-norm ts/year/low:am ts/year/high:am ts/year/step))
+    ))
 
 (define (sched/ts/mon/match ts/mon ts/year)
   (let ((ts/mon (sched/ts/mon/norm ts/mon))
@@ -463,7 +496,7 @@
              (cons ts/mon ts/year))))
     ))
 
-;; Matches a month range with a definite year
+;; Matches a month range with a definite year. Returns the month range
 (define (sched/ts/mon/range:definite-year low high step ts/year)
   (let ((over-low-or-year
           (or (and (= now/year ts/year)
@@ -480,12 +513,11 @@
                                  (>= now/mon low)))
                         )))
           (and (< file/year ts/year) over-low-or-year))
-      (let ((ts/mon/range:am
+      (let ((ts/mon:am
               (sched/ts/range-from low high step
                 (if (= file/year ts/year) file/mon low)
                 (if (= now/year ts/year) now/mon high))))
-        (boolean-when ts/mon/range:am
-          (cons ts/mon/range:am ts/year)))
+        (return-if ts/mon:am))
       )))
 
 (define (sched/ts/mon/range low-high--step? ts/year)
@@ -519,85 +551,72 @@
       (else
         (if ts/year/list?
             (let*
-              ((ts/year/low:am
-                 (+ ts/year/low
-                    (if (and (= file/year ts/year/low) (> file/mon high))
-                        ts/year/step 0)))
-               (ts/year/high:am
-                 (- ts/year/high
-                    (if (and (= now/year ts/year/high) (< now/mon low))
-                        ts/year/step 0)))
+              ((file<low? (< file/year ts/year/low))
+               (now>high? (> now/year ts/year/high))
 
+               ;; amortize `ts/year` with `am-range-from-range`, and the
+               ;; predicate of non-amortized being in range
                (ts/year:am
-                 ;; if they invert, that guarantees we're outside the range
-                 (boolean-when (<= ts/year/low:am ts/year/high:am)
-                   (sched/ts/bound-norm
-                     ts/year/low:am ts/year/high:am ts/year/step)))
+                 (let* ((am
+                          (sched/ts/mon/year:am-range-from-range
+                            ts/year/low (if file<low? jan file/mon)
+                            ts/year/high (if now>high? dec now/mon) ts/year/step
+                            low high step))
+                        (am:low
+                          (boolean-when am
+                            (if (list? am)
+                                (+ (car am)
+                                   (if (and (= file/year (car am))
+                                            (sched/ts/in-range? low high step
+                                              (bigger? file/mon low) dec)) 0
+                                       ts/year/step)) am)))
+                        (am:high
+                          (boolean-when am
+                            (if (list? am)
+                                (- (cadr am)
+                                   (if (and (= now/year (cadr am))
+                                            (sched/ts/in-range? low high step
+                                              jan (smaller? now/mon high))) 0
+                                       ts/year/step)) am))))
+                        (boolean-when (and am:low am:high (<= am:low am:high))
+                          (sched/ts/bound-norm am:low am:high step))
+                        ))
+
                (ts/mon:am
+                 ;; ... after amortizing, are they still a list?
                  (if (list? ts/year:am)
                      (let* ((full-range
                               (sched/ts/range-from low high step
                                 jan dec))
 
-                            (low:am
-                              (if (= file/year ts/year/low:am)
+                            ;; ... if so, then get the * ranges for low and high
+                            ;; years. This cannot fail on `range-from'
+                            (for-low
+                              (if (= file/year (car ts/year:am))
                                   (sched/ts/range-from low high step
                                     (bigger? file/mon low) dec)
                                   full-range))
-                            (high:am
-                              (if (= now/year ts/year/high:am)
+                            (for-high
+                              (if (= now/year (cadr ts/year:am))
                                   (sched/ts/range-from low high step
                                     jan (smaller? now/mon high))
-                                  full-range))
+                                  full-range)))
 
-                            (ts/year/low:am
-                              (if low:am ts/year/low:am
-                                (+ ts/year/low:am ts/year/step)))
-                            (ts/year/high:am
-                              (if high:am ts/year/high:am
-                                (- ts/year/high:am ts/year/step))))
+                       (list for-low for-high full-range step))
 
-                       ;; this *can* become false if `ts/year/*:am' had not
-                       ;; been amortized, but the range did not fit in both
-                       (set! ts/year:am
-                         (boolean-when
-                           (<= ts/year/low:am ts/year/high:am)
-                           (sched/ts/bound-norm
-                             ts/year/low:am ts/year/high:am
-                             ts/year/step)))
-
-                       (boolean-when ts/year:am
-                         (if (list? ts/year:am)
-                             (list
-                               (if (not low:am) full-range
-                                   low:am)
-                               (if (not high:am) full-range
-                                   high:am)
-                               full-range
-                               step)
-
-                             ;; (became) definite year:
-                             (cond
-                               ((and (not low:am)
-                                     (not high:am)) full-range)
-                               ((not low:am) high:am)
-                               ((not high:am) low:am)))
-                         ))
-
-                     ;; (became) definite year:
+                     ;; became definite year after amortizing
                      (boolean-when ts/year:am
-                       (sched/ts/range-from low high step
-                         (if (= file/year ts/year/low:am)
-                             (bigger? file/mon low) low)
-                         (if (= now/year ts/year/high:am)
-                             (smaller? now/mon high) high)))
-                     )))
-          (boolean-when ts/mon:am
-            (cons ts/mon:am ts/year:am)))
+                       (sched/ts/mon/range:definite-year low high step
+                         ts/year:am)))))
+              (boolean-when ts/mon:am
+                (cons ts/mon:am ts/year:am)))
 
             ;; definite year:
-            (sched/ts/mon/range:definite-year low high step
-              ts/year)
+            (let* ((ts/year:am ts/year)
+                   (ts/mon:am (sched/ts/mon/range:definite-year low high step
+                                ts/year:am)))
+              (boolean-when ts/mon:am
+                (cons ts/mon:am ts/year:am)))
         )))
     ))
 
@@ -814,7 +833,7 @@
     (cond
       ;; step doesn't apply to these conditions:
       ((and low/* high/*)
-        (sched/ts/nday/range* 1 days-in-month 1 ts/mon ts/year)
+        (sched/ts/nday/range* 1 days-in-month step ts/mon ts/year)
        )
       (low/* ; the same as lower-bounding to `1'
         (sched/ts/nday/range* 1 high 1 ts/mon ts/year))
@@ -1205,7 +1224,7 @@ Note:
   (exit))
 
 (define prog/name    "schedl")
-(define prog/version "v1.0.0")
+(define prog/version "v1.1.0")
 (define prog/dev     "mH")
 (define prog/year    "2023")
 (define prog/halt    #f)

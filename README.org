@@ -124,7 +124,7 @@ upper bounds respectively. It has the syntax =(- <lower-bound> <upper-bound>
 
 A third field indicates a step. For example:
 
-- =((- * * 3) 1)=: Every three days in January
+- =((- * * 3) 1)=: Every three days in January, starting from the 1st day
 - =((- 10 * 2) *)=: Every two days in every month, starting from the 10th day
 
 You can omit fields with =*=. Range fields can also be elements of
@@ -236,7 +236,7 @@ ignore this section.
 In the case you want to use the default example as your frontend for =schedl=,
 here are some things you need to consider:
 
-- job descriptions may *not* start with a =!= character::
+- job descriptions may *not* start with a =!= character:
   + =(job ... ((foo "foo bar")))= is fine, =(job ... ((foo "!foo bar")))= isn't
 - job names may be valid file system file names:
   + =(job ... ((foo-bar ...)))= is fine, =(job ... ((foo/bar ...)))= isn't
