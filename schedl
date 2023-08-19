@@ -430,7 +430,7 @@
 (define (sched/ts/mon/year:am-range-from-range
           ts/year/low ts/year/low:mon
           ts/year/high ts/year/high:mon ts/year/step
-          ts/mon/low ts/mon/high ts/mon/step)
+          ts/mon/low ts/mon/high)
   (let* ((ts/year/low:am
            (+ ts/year/low
               (if (> ts/year/low:mon ts/mon/high)
@@ -454,24 +454,23 @@
                (ts/year/high (cadr ts/year))
                (ts/year/step (sched/ts/step-from ts/year))
 
-               (full-range* (list jan dec))
+               (full-range (list jan dec 1))
 
                (file<low? (< file/year ts/year/low))
                (now>high? (> now/year ts/year/high)))
           (if mon/*
               (cons (list
-                      (if file<low? full-range*
+                      (if file<low? full-range
                           (sched/ts/bound-norm file/mon dec))
-                      (if now>high? full-range*
+                      (if now>high? full-range
                           (sched/ts/bound-norm jan now/mon))
-                      full-range*)
+                      full-range)
                     ts/year)
               ;; definite month:
               (let ((ts/year:am
                       (sched/ts/mon/year:am-range
                         ts/year/low (if file<low? jan file/mon)
-                        ts/year/high (if now>high? dec now/mon)
-                        ts/year/step
+                        ts/year/high (if now>high? dec now/mon) ts/year/step
                         ts/mon)))
                 (boolean-when ts/year:am
                   (cons ts/mon ts/year:am)))
@@ -485,14 +484,14 @@
                   ts/year)
             ;; definite month:
             (boolean-when
-             (if (= file/year ts/year)
-                 (and (<= file/mon ts/mon)
-                      (or (> now/year ts/year)
-                          (>= now/mon ts/mon)))
-                 ;; (< file/year ts/year)
-                 (or (and (= now/year ts/year)
-                          (>= now/mon ts/mon))
-                     (> now/year ts/year)))
+              (if (= file/year ts/year)
+                  (and (<= file/mon ts/mon)
+                       (or (> now/year ts/year)
+                           (>= now/mon ts/mon)))
+                  ;; (< file/year ts/year)
+                  (or (and (= now/year ts/year)
+                           (>= now/mon ts/mon))
+                      (> now/year ts/year)))
              (cons ts/mon ts/year))))
     ))
 
@@ -506,12 +505,7 @@
     (boolean-when
       (or (and (= file/year ts/year)
                (or (and (<= file/mon high)
-                        (or (>= file/mon low) over-low-or-year))
-                   (and (> file/mon high)
-                        (or (> (- now/year ts/year) 1)
-                            (and (> now/year ts/year)
-                                 (>= now/mon low)))
-                        )))
+                        (or (>= file/mon low) over-low-or-year))))
           (and (< file/year ts/year) over-low-or-year))
       (let ((ts/mon:am
               (sched/ts/range-from low high step
@@ -561,7 +555,7 @@
                           (sched/ts/mon/year:am-range-from-range
                             ts/year/low (if file<low? jan file/mon)
                             ts/year/high (if now>high? dec now/mon) ts/year/step
-                            low high step))
+                            low high))
                         (am:low
                           (boolean-when am
                             (if (list? am)
@@ -579,7 +573,7 @@
                                               jan (smaller? now/mon high))) 0
                                        ts/year/step)) am))))
                         (boolean-when (and am:low am:high (<= am:low am:high))
-                          (sched/ts/bound-norm am:low am:high step))
+                          (sched/ts/bound-norm am:low am:high ts/year/step))
                         ))
 
                (ts/mon:am
@@ -1224,7 +1218,7 @@ Note:
   (exit))
 
 (define prog/name    "schedl")
-(define prog/version "v1.1.0")
+(define prog/version "v1.1.1")
 (define prog/dev     "mH")
 (define prog/year    "2023")
 (define prog/halt    #f)
