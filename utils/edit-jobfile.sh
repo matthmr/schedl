@@ -13,8 +13,9 @@ esac
 
 EDITOR=${2:-$EDITOR}
 
-then=$(stat -Lc '%y' $jobfile)
+then=$(stat -Lc '%Y' $jobfile)
+then=$(date -d "@${then}" +'%Y%m%d%H%M')
 
 $EDITOR $jobfile # this should take the foreground
 
-touch -d "$then" $jobfile
+touch -m -t "$then" $jobfile

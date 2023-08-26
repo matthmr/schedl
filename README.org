@@ -243,6 +243,9 @@ here are some things you need to consider:
 - job names may *not* end with =.sh=; that would make future handlers that look
   for the executable part of your job confused:
   + =(job ... ((foosh ...)))= is fine, =(job ... ((foo.sh ...)))= isn't
+- job names may *not* end with =.log=; that would make future handlers that look
+  for logs:
+  + =(job ... ((foolog ...)))= is fine, =(job ... ((foo.log ...)))= isn't
 
 The way this handler works (at least on my system), is that it gets called as
 soon as the user logs in, then another script looks for files under
