@@ -2,6 +2,8 @@
 -e sched/main
 !#
 
+(use-modules (ice-9 readline))
+
 ;;; TODO: this could take a scheme program as an output handler
 ;;; TODO: optimize range functions
 ;;; TODO: the testing could also be done on all paths for `ts'
@@ -21,7 +23,7 @@
 
 (define (sched/error ecode)
   (error (string-append
-          "\x1b[91m[ !! ]\x1b[0m \x1b[100m"
+          "\x1b[1;91m[ !! ] \x1b[0;1m"
           (cdr (assoc ecode sched/errors))
           ". See `--help'\x1b[0m")))
 
@@ -145,9 +147,13 @@
 
 ;;;; INTERNALS VARIABLES
 
+(define (sched-time->str time)
+  (strftime "%Y%m%d-%w %I%M%p" time))
+
+(define sched:jobfile "") ;; jobfile filename
+
 (define sched:jobs    (list)) ;; list of defined jobs
-;; (define sched:matches (list)) ;; list of matched jobs
-(define sched:dry?    #f)     ;; `--dry' predicate
+(define sched:matches (list)) ;; list of matched jobs
 
 (define sched:now     (localtime (current-time)))
 (define sched:jobfile-now 0)
@@ -1154,24 +1160,27 @@
         )))
 
 (define (sched/jobfile/main)
-  (for-each
-    (lambda (job)
-      (let* ((job-len (length job))
-             (time-scope (car job))
-             (job-scope (cadr job)))
-        (when (sched/ts/instance? time-scope)
-          (for-each
-            (lambda (job)
-              (let ((job-name (car job))
-                    (job-desc (cdr job)))
-                (if (null? (cdr job-desc))
-                    (format #t "JOB: ~a ~a\n"
-                      job-name (car job-desc))
-                    (format #t "DO: ~a\nJOB: ~a ~a\n"
-                      (cdr job-desc) job-name (car job-desc)))))
-            job-scope))
-        ))
-    sched:jobs))
+  (let ((output-file (open-file "/tmp/schedl/schedl-out" "w")))
+    (for-each
+      (lambda (job)
+        (let* ((job-len (length job))
+               (time-scope (car job))
+               (job-scope (cadr job)))
+          (when (sched/ts/instance? time-scope)
+            (for-each
+              (lambda (job)
+                (let ((job-name (car job))
+                      (job-desc (cdr job)))
+                  (sched/new-for! sched:matches (cons job-name (car job-desc)))
+
+                  (if (null? (cdr job-desc))
+                      (format output-file "JOB: ~a ~a\n"
+                        job-name (car job-desc))
+                      (format output-file "JOB: ~a ~a\nDO: ~a\n"
+                        job-name (car job-desc) (cdr job-desc)))))
+              job-scope))
+          ))
+      sched:jobs)))
 
 ;;;; GLOBALS
 
@@ -1183,7 +1192,12 @@
 
 ;;;; LOCALS
 
-(define (sched/main/help _)
+(define sched:dry? #f)
+(define sched:interactive? #f)
+
+;;
+
+(define (sched/main/help)
   (display "\
 Usage:       schedl [option] JOBFILE
 Description: A static scheduler
@@ -1192,46 +1206,80 @@ Info:
   --version, -v: displays the current version
 Options (one per invocation):
   --dry, -k: don't update the job file
+  --interactive, -i: prompt the user to skip the jobs
 Note:
   Read `(schedl)Top' by running `info schedl'\n")
   (set! prog/halt #t))
 
-(define (sched/main/version _)
+(define (sched/main/version)
   (format #t "~a ~a, ~a ~a\n"
           prog/name prog/version prog/dev prog/year)
   (set! prog/halt #t))
 
-(define (sched/main/dry _)
+(define (sched/main/dry)
   (set! sched:dry? #t))
 
-(define (sched/main/file file)
-  (primitive-load file)
+(define (sched/main/interactive)
+  (set! sched:interactive? #t))
 
+;;
+
+(define (sched/main/file file)
   (set! sched:jobfile-now (localtime (stat:mtime (stat file))))
   (set! file/day  (tm:mday sched:jobfile-now))
   (set! file/mon  (+ 1 (tm:mon sched:jobfile-now)))
   (set! file/year (+ 1900 (tm:year sched:jobfile-now)))
   (set! file/wday (+ 1 (tm:wday sched:jobfile-now)))
 
+  (primitive-load file)
+
   (sched/jobfile/main)
+
+  (when sched:interactive?
+    (when sched:matches
+      (display "[ .. ] Matches from this run: \n")
+      (for-each
+        (lambda (job)
+          (format #t "  - ~a: ~a\n" (car job) (cdr job)))
+        sched:matches))
+
+    (display
+      (string-append
+        "[ .. ] Next update: ("
+        (sched-time->str sched:jobfile-now)
+        ") -> ("
+        (sched-time->str sched:now)
+        ")" "\n"))
+
+    (display "[ ?? ] Dry this run? [y/N] ")
+    (let ((ans (begin
+                 (activate-readline)
+                 (readline))))
+      (set! sched:dry?
+       (not (bool (or (string= ans "") (string= ans "n")))))
+      ))
+
   (unless sched:dry? (utime file))
   (exit))
 
 (define prog/name    "schedl")
-(define prog/version "v1.1.1")
+(define prog/version "v1.2.0")
 (define prog/dev     "mH")
-(define prog/year    "2023")
+(define prog/year    "2024")
 (define prog/halt    #f)
 
 ;;;; COMMAND LINE
 
-(define sched/options '(("--help"    #:function sched/main/help)
-                        ("--version" #:function sched/main/version)
-                        ("--dry"     #:function sched/main/dry)
+(define sched/options
+  '(("--help"        #:function sched/main/help)
+    ("--version"     #:function sched/main/version)
+    ("--dry"         #:function sched/main/dry)
+    ("--interactive" #:function sched/main/interactive)
 
-                        ("-k" #:same-as "--dry")
-                        ("-h" #:same-as "--help")
-                        ("-v" #:same-as "--version")))
+    ("-i" #:same-as "--interactive")
+    ("-k" #:same-as "--dry")
+    ("-h" #:same-as "--help")
+    ("-v" #:same-as "--version")))
 
 (define (sched/options/get attr list)
   (let ((function (sched/get attr list))
@@ -1244,20 +1292,18 @@ Note:
 ;;;; MAIN
 
 (define (sched/main args)
-  (let ((args (cdr args)))
-    (let iter ((args args))
-      (when (null? args) (sched/error 'EMISSINGJOB))
-      (let* ((matched-option (assoc (car args) sched/options))
-             (matched-value (boolean-when matched-option
-                              (cdr matched-option))))
-        (unless (null? args)
-          (if matched-value
-              (begin
-                ((primitive-eval (sched/options/get #:function matched-value))
-                  (cdr args))
-                (when prog/halt (exit))
-                (iter (cdr args)))
-              (sched/main/file (car args))))
-        ))
-    (sched/error 'EMISSINGJOB)
-    ))
+  (for-each
+   (lambda (arg)
+     (let* ((matched-option (assoc arg sched/options))
+            (matched-value (boolean-when matched-option
+                             (cdr matched-option))))
+     (if matched-value
+       ((primitive-eval (sched/options/get #:function matched-value)))
+       (set! sched:jobfile arg))))
+   (cdr args))
+
+  (when prog/halt (exit))
+
+  (if (not (string= sched:jobfile ""))
+      (sched/main/file sched:jobfile)
+      (sched/error 'EMISSINGJOB)))
